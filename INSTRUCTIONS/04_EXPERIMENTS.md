@@ -13,8 +13,14 @@ This file serves as the official roadmap and trial-and-error logbook for the for
 ### Phase 1: Baseline (Control)
 * **Description:** Train a pure baseline LSTM model (from `model_builder.py`) using all generated features and rigidly assigned hyperparameters (e.g., window = 12, predicting $t+1$ step forward).
 * **Goal:** Establish the minimum error baseline (MSE, MAE, R² Score) that subsequent phases will strive to beat.
-* **RESULTS:** *[To be filled by the Agent after execution]*
-
+* **RESULTS:** 
+  * **Dataset**: JPM (1 ticker)
+  * **Hyperparameters**: Window = 12, Prediction = $t+1$, Hidden = 64, Layers = 2
+  * **Test Metrics**:
+    * **RMSE**: 0.001312
+    * **MAE**: 0.000802
+    * **R² Score**: -0.1181
+    * **Directional Accuracy**: 46.68%
 ### Phase 2: Time Horizon
 * **Description:** Modify the target variable generation in `data_processor.py` to create labels shifted by $t+1$, $t+2$, and $t+3$ ticks into the future.
 * **Goal:** Answer research question #2 regarding the degradation or change in prediction error as the horizon extends.
