@@ -1,117 +1,167 @@
 """
 model_builder.py — PyTorch Deep Learning Model Architectures
 
-Contains the BiLSTM regression model for financial time-series forecasting.
-
-Architecture:
-    Input -> BiLSTM Layer(s) -> Dropout -> Fully Connected (Dense) -> Linear Output
-
-Tensor shape convention (documented inline):
-    [batch_size, sequence_length, num_selected_features]
+Defines the core forecasting models:
+    1. BiLSTMModel: Standard Bidirectional LSTM.
+    2. BiLSTMAttentionModel: BiLSTM with an additive attention mechanism.
 """
 
 import logging
-
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
 
 def get_device() -> torch.device:
-    """Detect and return the best available compute device.
+    """Auto-detect and return the best available PyTorch device.
 
-    Priority: CUDA -> MPS -> CPU.
+    Checks for CUDA (NVIDIA), MPS (Apple Silicon), and falls back to CPU.
 
     Returns:
-        torch.device configured for the fastest available backend.
+        torch.device
     """
-    pass
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    
+    logger.info("Auto-detected PyTorch device: %s", device)
+    return device
 
 
 class BiLSTMModel(nn.Module):
-    """Bidirectional LSTM model for continuous regression on time-series data.
-
-    The network accepts 3D input tensors of shape
-    [batch_size, sequence_length, num_features] and produces a single
-    scalar output (predicted rate of return).
-
-    Args:
-        input_size: Number of input features per time step.
-        hidden_size: Number of LSTM hidden units.
-        num_layers: Number of stacked BiLSTM layers (default 1).
-        dropout: Dropout probability between LSTM layers (default 0.2).
-    """
+    """Standard Bidirectional LSTM for time-series forecasting."""
 
     def __init__(
         self,
         input_size: int,
-        hidden_size: int,
-        num_layers: int = 1,
+        hidden_size: int = 64,
+        num_layers: int = 2,
         dropout: float = 0.2,
     ) -> None:
-        """Initialise the BiLSTM layers, dropout, and dense head."""
-        super().__init__()
-        pass
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through the BiLSTM network.
+        """Initialize the BiLSTM model.
 
         Args:
-            x: Input tensor of shape [batch_size, sequence_length, num_features].
+            input_size: Number of features in the input data.
+            hidden_size: Number of features in the hidden state.
+            num_layers: Number of recurrent layers.
+            dropout: Dropout probability.
+        """
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+
+        # BiLSTM Layer
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+
+        # Dropout for the output of the LSTM
+        self.dropout = nn.Dropout(dropout)
+
+        # Fully connected layer
+        # Multiply by 2 because it's bidirectional
+        self.fc = nn.Linear(hidden_size * 2, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Input tensor of shape [batch_size, sequence_length, input_size].
 
         Returns:
-            Predictions tensor of shape [batch_size, 1].
+            Output tensor of shape [batch_size, 1].
         """
-        # x shape: [batch_size, sequence_length, num_features]
-        pass
+        # lstm_out: [batch_size, sequence_length, hidden_size * 2]
+        lstm_out, _ = self.lstm(x)
+
+        # Take the output from the last time step
+        last_hidden = lstm_out[:, -1, :]  # [batch_size, hidden_size * 2]
+
+        last_hidden = self.dropout(last_hidden)
+
+        # out: [batch_size, 1]
+        out = self.fc(last_hidden)
+        
+        return out
 
 
 class BiLSTMAttentionModel(nn.Module):
-    """BiLSTM with a simple additive Attention mechanism.
-
-    Extends the base BiLSTM by attending over all hidden states
-    instead of using only the final time-step output.
-
-    Args:
-        input_size: Number of input features per time step.
-        hidden_size: Number of LSTM hidden units.
-        num_layers: Number of stacked BiLSTM layers (default 1).
-        dropout: Dropout probability (default 0.2).
-    """
+    """Bidirectional LSTM with Additive Attention for time-series forecasting."""
 
     def __init__(
         self,
         input_size: int,
-        hidden_size: int,
-        num_layers: int = 1,
+        hidden_size: int = 64,
+        num_layers: int = 2,
         dropout: float = 0.2,
     ) -> None:
-        """Initialise BiLSTM layers, attention weights, and dense head."""
-        super().__init__()
-        pass
-
-    def attention(self, lstm_output: torch.Tensor) -> torch.Tensor:
-        """Compute attention-weighted context vector.
+        """Initialize the BiLSTM with Attention model.
 
         Args:
-            lstm_output: Full LSTM output of shape
-                [batch_size, sequence_length, hidden_size * 2].
-
-        Returns:
-            Context vector of shape [batch_size, hidden_size * 2].
+            input_size: Number of features in the input data.
+            hidden_size: Number of features in the hidden state.
+            num_layers: Number of recurrent layers.
+            dropout: Dropout probability.
         """
-        pass
+        super().__init__()
+        self.hidden_size = hidden_size
+
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+
+        # Attention layer (additive attention)
+        # We learn a linear transformation to a context vector
+        self.attention_weights = nn.Linear(hidden_size * 2, 1)
+        
+        self.dropout = nn.Dropout(dropout)
+
+        self.fc = nn.Linear(hidden_size * 2, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through BiLSTM + Attention.
+        """Forward pass.
 
         Args:
-            x: Input tensor of shape [batch_size, sequence_length, num_features].
+            x: Input tensor of shape [batch_size, sequence_length, input_size].
 
         Returns:
-            Predictions tensor of shape [batch_size, 1].
+            Output tensor of shape [batch_size, 1].
         """
-        # x shape: [batch_size, sequence_length, num_features]
-        pass
+        # lstm_out: [batch_size, sequence_length, hidden_size * 2]
+        lstm_out, _ = self.lstm(x)
+
+        # Attention mechanism
+        # Calculate attention scores
+        # scores: [batch_size, sequence_length, 1]
+        scores = self.attention_weights(lstm_out)
+        
+        # Normalize scores to probabilities over the sequence length
+        # alpha: [batch_size, sequence_length, 1]
+        alpha = F.softmax(scores, dim=1)
+        
+        # Compute context vector as weighted sum of LSTM outputs
+        # context: [batch_size, hidden_size * 2]
+        context = torch.sum(alpha * lstm_out, dim=1)
+
+        context = self.dropout(context)
+
+        # out: [batch_size, 1]
+        out = self.fc(context)
+
+        return out

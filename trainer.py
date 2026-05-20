@@ -1,88 +1,84 @@
 """
 trainer.py — Training Loop, Validation & Evaluation
 
-Handles:
-    - Standard PyTorch training loop with mini-batches.
-    - Validation tracking after every epoch.
-    - Early stopping to prevent overfitting.
-    - Evaluation metrics: MSE, RMSE, MAE, R² Score, Directional Accuracy.
+Handles model training, early stopping, performance metric calculation,
+and model persistence (saving/loading checkpoints).
 """
 
 import logging
-from typing import Dict, Optional, Tuple
+from pathlib import Path
+from typing import Dict, Tuple, Optional
 
 import numpy as np
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import torch
 import torch.nn as nn
+import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
+from data_processor import DataProcessor
 
 logger = logging.getLogger(__name__)
 
 
 class EarlyStopping:
-    """Monitors validation loss and stops training when no improvement is
-    observed for a given number of epochs (patience).
+    """Stops training if validation loss doesn't improve after a given patience."""
 
-    Attributes:
-        patience: Number of epochs to wait before stopping.
-        min_delta: Minimum improvement to qualify as progress.
-        best_loss: Best validation loss observed so far.
-        counter: Epochs since last improvement.
-        should_stop: Flag indicating whether training should halt.
-    """
-
-    def __init__(self, patience: int = 10, min_delta: float = 1e-5) -> None:
-        """Initialise the early stopping monitor.
+    def __init__(self, patience: int = 10, min_delta: float = 1e-6) -> None:
+        """Initialize EarlyStopping.
 
         Args:
-            patience: Epochs to wait for improvement (default 10).
-            min_delta: Minimum change to count as improvement (default 1e-5).
+            patience: How many epochs to wait after last time validation loss improved.
+            min_delta: Minimum change in the monitored quantity to qualify as an improvement.
         """
-        pass
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.best_loss = float("inf")
+        self.early_stop = False
 
-    def __call__(self, val_loss: float) -> bool:
-        """Update state with the latest validation loss.
-
-        Args:
-            val_loss: Current epoch's validation loss.
-
-        Returns:
-            True if training should stop, False otherwise.
-        """
-        pass
+    def __call__(self, val_loss: float) -> None:
+        if val_loss < self.best_loss - self.min_delta:
+            self.best_loss = val_loss
+            self.counter = 0
+        else:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+                logger.info("Early stopping triggered after %d epochs without improvement", self.counter)
 
 
 class Trainer:
-    """Encapsulates the training, validation, and evaluation workflow.
-
-    Attributes:
-        model: PyTorch model to train.
-        device: Compute device (CPU / CUDA / MPS).
-        criterion: Loss function (MSE or Huber).
-        optimizer: AdamW optimizer instance.
-    """
+    """Handles the PyTorch training loop and evaluation metrics."""
 
     def __init__(
         self,
         model: nn.Module,
         device: torch.device,
         learning_rate: float = 1e-3,
+        weight_decay: float = 1e-5,
         loss_fn: str = "mse",
     ) -> None:
-        """Initialise the Trainer with a model, device, and training config.
+        """Initialize the Trainer.
 
         Args:
-            model: Instantiated PyTorch model.
-            device: Target compute device.
-            learning_rate: AdamW learning rate (default 1e-3).
-            loss_fn: Loss function name — 'mse' or 'huber' (default 'mse').
+            model: The PyTorch model to train.
+            device: Device to run training on (CPU, CUDA, MPS).
+            learning_rate: Optimizer learning rate.
+            weight_decay: L2 regularization penalty.
+            loss_fn: Loss function name -- 'mse' or 'huber' (default 'mse').
         """
-        pass
-
-    # ------------------------------------------------------------------
-    # Data Preparation
-    # ------------------------------------------------------------------
+        self.model = model.to(device)
+        self.device = device
+        
+        self.optimizer = optim.AdamW(
+            self.model.parameters(), lr=learning_rate, weight_decay=weight_decay
+        )
+        
+        if loss_fn.lower() == "huber":
+            self.criterion = nn.HuberLoss()
+        else:
+            self.criterion = nn.MSELoss()
 
     def create_dataloaders(
         self,
@@ -92,101 +88,231 @@ class Trainer:
         y_val: np.ndarray,
         batch_size: int = 64,
     ) -> Tuple[DataLoader, DataLoader]:
-        """Wrap numpy arrays in TensorDatasets and DataLoaders.
+        """Convert numpy arrays to PyTorch DataLoaders.
 
         Args:
-            X_train: Training features [n_train, window, features].
-            y_train: Training targets [n_train,].
-            X_val: Validation features [n_val, window, features].
-            y_val: Validation targets [n_val,].
-            batch_size: Mini-batch size (default 64).
+            X_train: Training features.
+            y_train: Training targets.
+            X_val: Validation features.
+            y_val: Validation targets.
+            batch_size: Batch size for both dataloaders.
 
         Returns:
             Tuple of (train_loader, val_loader).
         """
-        pass
+        train_ds = TensorDataset(
+            torch.FloatTensor(X_train),
+            torch.FloatTensor(y_train)
+        )
+        val_ds = TensorDataset(
+            torch.FloatTensor(X_val),
+            torch.FloatTensor(y_val)
+        )
+        
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+        
+        return train_loader, val_loader
 
-    # ------------------------------------------------------------------
-    # Training Loop
-    # ------------------------------------------------------------------
+    def _train_one_epoch(self, dataloader: DataLoader, max_grad_norm: float = 1.0) -> float:
+        """Run one pass over the training data."""
+        self.model.train()
+        total_loss = 0.0
+        
+        for X_batch, y_batch in dataloader:
+            X_batch = X_batch.to(self.device)
+            y_batch = y_batch.to(self.device)
+            
+            self.optimizer.zero_grad()
+            
+            # Forward pass
+            preds = self.model(X_batch).squeeze(-1)
+            loss = self.criterion(preds, y_batch)
+            
+            # Backward pass
+            loss.backward()
+            
+            # Gradient clipping to prevent exploding gradients
+            nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
+            
+            self.optimizer.step()
+            total_loss += loss.item()
+            
+        return total_loss / len(dataloader)
+
+    def _validate(self, dataloader: DataLoader) -> float:
+        """Evaluate the model on the validation set."""
+        self.model.eval()
+        total_loss = 0.0
+        
+        with torch.no_grad():
+            for X_batch, y_batch in dataloader:
+                X_batch = X_batch.to(self.device)
+                y_batch = y_batch.to(self.device)
+                
+                preds = self.model(X_batch).squeeze(-1)
+                loss = self.criterion(preds, y_batch)
+                total_loss += loss.item()
+                
+        return total_loss / len(dataloader)
 
     def train(
         self,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        num_epochs: int = 100,
+        epochs: int = 100,
         patience: int = 10,
-    ) -> Dict[str, list]:
-        """Run the full training loop with validation and early stopping.
-
-        Args:
-            train_loader: DataLoader for training batches.
-            val_loader: DataLoader for validation batches.
-            num_epochs: Maximum number of epochs (default 100).
-            patience: Early stopping patience (default 10).
-
-        Returns:
-            Dictionary with 'train_loss' and 'val_loss' histories.
-        """
-        pass
-
-    def _train_one_epoch(self, train_loader: DataLoader) -> float:
-        """Execute one training epoch.
+        verbose: bool = True,
+    ) -> float:
+        """Execute the full training loop with early stopping.
 
         Args:
             train_loader: DataLoader for training data.
-
-        Returns:
-            Average training loss for the epoch.
-        """
-        pass
-
-    def _validate(self, val_loader: DataLoader) -> float:
-        """Evaluate the model on the validation set.
-
-        Args:
             val_loader: DataLoader for validation data.
+            epochs: Maximum number of epochs to train.
+            patience: Early stopping patience.
+            verbose: If True, logs epoch progress.
 
         Returns:
-            Average validation loss.
+            The best validation loss achieved.
         """
-        pass
+        early_stopping = EarlyStopping(patience=patience)
+        
+        if verbose:
+            logger.info("Starting training on device %s for up to %d epochs", self.device, epochs)
+            
+        for epoch in range(1, epochs + 1):
+            train_loss = self._train_one_epoch(train_loader)
+            val_loss = self._validate(val_loader)
+            
+            if verbose and (epoch % 5 == 0 or epoch == 1):
+                logger.info(
+                    "Epoch %3d/%d -- train_loss=%.6f  val_loss=%.6f",
+                    epoch, epochs, train_loss, val_loss
+                )
+                
+            early_stopping(val_loss)
+            if early_stopping.early_stop:
+                break
+                
+        return early_stopping.best_loss
 
-    # ------------------------------------------------------------------
-    # Evaluation Metrics
-    # ------------------------------------------------------------------
+    def evaluate(self, X_test: np.ndarray, y_test: np.ndarray) -> Dict[str, float]:
+        """Compute standard regression metrics on the test set.
 
-    def evaluate(
-        self, test_loader: DataLoader
-    ) -> Dict[str, float]:
-        """Compute all evaluation metrics on the test set.
-
-        Metrics:
-            - MSE  (Mean Squared Error)
-            - RMSE (Root Mean Squared Error)
-            - MAE  (Mean Absolute Error)
-            - R²   (Coefficient of Determination)
-            - DA   (Directional Accuracy)
+        Calculates MSE, RMSE, MAE, R2 Score, and Directional Accuracy.
 
         Args:
-            test_loader: DataLoader for test data.
+            X_test: Test features.
+            y_test: Test targets.
 
         Returns:
-            Dictionary mapping metric names to their values.
+            Dictionary of computed metrics.
         """
-        pass
+        self.model.eval()
+        
+        # For evaluation, we can process all test data at once if it fits in memory,
+        # but to be safe we'll use a dataloader.
+        test_ds = TensorDataset(
+            torch.FloatTensor(X_test),
+            torch.FloatTensor(y_test)
+        )
+        test_loader = DataLoader(test_ds, batch_size=256, shuffle=False)
+        
+        all_preds = []
+        with torch.no_grad():
+            for X_batch, _ in test_loader:
+                X_batch = X_batch.to(self.device)
+                preds = self.model(X_batch).squeeze(-1)
+                all_preds.append(preds.cpu().numpy())
+                
+        y_pred = np.concatenate(all_preds)
+        
+        # Metrics
+        mse = mean_squared_error(y_test, y_pred)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        
+        # Directional Accuracy
+        # Computes percentage of time the model correctly predicts the sign of the return
+        correct_direction = np.sign(y_pred) == np.sign(y_test)
+        da = np.mean(correct_direction) * 100.0
+        
+        metrics = {
+            "mse": mse,
+            "rmse": rmse,
+            "mae": mae,
+            "r2": r2,
+            "directional_accuracy": da,
+        }
+        
+        logger.info(
+            "Test Evaluation -- RMSE: %.6f, MAE: %.6f, R2: %.4f, DA: %.2f%%",
+            rmse, mae, r2, da
+        )
+        
+        return metrics
 
-    @staticmethod
-    def directional_accuracy(
-        y_true: np.ndarray, y_pred: np.ndarray
-    ) -> float:
-        """Compute the percentage of correctly predicted price directions.
+    def save_checkpoint(
+        self, filepath: str, data_processor: DataProcessor, feature_names: list, window_size: int
+    ) -> None:
+        """Save model, optimizer, scaler state, and configuration to disk.
+
+        Allows for seamless resumption of training or inference on another machine.
 
         Args:
-            y_true: Ground-truth rate-of-return values.
-            y_pred: Predicted rate-of-return values.
+            filepath: Destination file path (e.g., 'checkpoints/model.pt').
+            data_processor: The DataProcessor instance whose scaler state should be saved.
+            feature_names: List of feature names used during training.
+            window_size: The time window size used during training.
+        """
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        checkpoint = {
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "feature_names": feature_names,
+            "window_size": window_size,
+        }
+        
+        if data_processor.scaler is not None and data_processor._scaler_fitted:
+            checkpoint["scaler"] = data_processor.scaler
+        else:
+            checkpoint["scaler"] = None
+
+        torch.save(checkpoint, path)
+        logger.info("[OK] Checkpoint saved to %s", path)
+
+    def load_checkpoint(self, filepath: str, data_processor: DataProcessor) -> Dict:
+        """Load model weights, optimizer state, and scaler from disk.
+
+        Args:
+            filepath: Path to the saved checkpoint file.
+            data_processor: DataProcessor instance to restore the scaler into.
 
         Returns:
-            Fraction of samples where sign(pred) == sign(true).
+            Dictionary containing 'feature_names' and 'window_size' used during training.
         """
-        pass
+        path = Path(filepath)
+        if not path.exists():
+            raise FileNotFoundError(f"Checkpoint not found at {path}")
+            
+        # load onto current device
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        
+        scaler = checkpoint.get("scaler")
+        if scaler is not None:
+            data_processor.scaler = scaler
+            data_processor._scaler_fitted = True
+            
+        logger.info("[OK] Checkpoint loaded from %s", path)
+        
+        return {
+            "feature_names": checkpoint.get("feature_names", []),
+            "window_size": checkpoint.get("window_size", 12),
+        }
