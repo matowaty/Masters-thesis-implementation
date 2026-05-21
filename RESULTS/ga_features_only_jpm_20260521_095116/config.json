@@ -1,0 +1,8 @@
+{
+  "mode": "features_only",
+  "ga_epochs": 5,
+  "data_fraction": 0.2,
+  "population_size": 6,
+  "num_generations": 3,
+  "data_path": "DATA/JPM.csv"
+}

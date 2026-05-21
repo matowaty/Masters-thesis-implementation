@@ -163,6 +163,7 @@ class Trainer:
         epochs: int = 100,
         patience: int = 10,
         verbose: bool = True,
+        result_logger: Optional["ResultLogger"] = None,
     ) -> float:
         """Execute the full training loop with early stopping.
 
@@ -172,6 +173,7 @@ class Trainer:
             epochs: Maximum number of epochs to train.
             patience: Early stopping patience.
             verbose: If True, logs epoch progress.
+            result_logger: Optional ResultLogger to record per-epoch losses.
 
         Returns:
             The best validation loss achieved.
@@ -190,6 +192,9 @@ class Trainer:
                     "Epoch %3d/%d -- train_loss=%.6f  val_loss=%.6f",
                     epoch, epochs, train_loss, val_loss
                 )
+
+            if result_logger is not None:
+                result_logger.log_epoch(epoch, train_loss, val_loss)
                 
             early_stopping(val_loss)
             if early_stopping.early_stop:

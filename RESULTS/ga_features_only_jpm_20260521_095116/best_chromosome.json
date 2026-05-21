@@ -1,0 +1,38 @@
+{
+  "window_size": 12,
+  "look_forward": 1,
+  "hidden_units": 64,
+  "dropout": 0.2,
+  "learning_rate": 0.001,
+  "num_selected_features": 6,
+  "feature_mask": [
+    0,
+    1,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    1
+  ],
+  "selected_features": [
+    "High",
+    "Volume",
+    "BB_Low",
+    "SMA_20",
+    "RSI",
+    "OBV"
+  ]
+}

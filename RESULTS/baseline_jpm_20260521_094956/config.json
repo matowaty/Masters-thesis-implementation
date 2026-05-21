@@ -1,0 +1,11 @@
+{
+  "data_path": "DATA/JPM.csv",
+  "window_size": 12,
+  "target": "Target_1_Tick",
+  "batch_size": 64,
+  "epochs": 50,
+  "learning_rate": 0.001,
+  "hidden_size": 64,
+  "num_layers": 2,
+  "dropout": 0.2
+}

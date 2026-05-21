@@ -6,12 +6,15 @@ Data Ingestion -> Feature Engineering -> Windowing/Scaling ->
 Model Training -> GA Optimization -> Final Evaluation.
 """
 
+import argparse
 import logging
 import sys
 
 from data_processor import DataProcessor
 from feature_engineer import FeatureEngineer
+from ga_optimizer import GAOptimizer
 from model_builder import BiLSTMModel, get_device
+from result_logger import ResultLogger
 from trainer import Trainer
 
 logger = logging.getLogger(__name__)
@@ -28,6 +31,26 @@ def setup_logging(level: int = logging.INFO) -> None:
         format="%(asctime)s  %(levelname)-8s  %(name)s -- %(message)s",
         stream=sys.stdout,
     )
+
+
+def _prepare_data(data_path: str = "DATA/JPM.csv"):
+    """Shared data preparation: load, feature engineer, compute targets, split.
+
+    Returns:
+        Tuple of (dp, fe, train_df, val_df, test_df, feature_cols).
+    """
+    dp = DataProcessor(scaler_type="standard")
+    df = dp.load_data(data_path)
+    df = dp.handle_missing_intervals(df)
+
+    fe = FeatureEngineer()
+    df = fe.add_all_features(df)
+    feature_cols = fe.get_feature_names()
+
+    df = dp.compute_targets(df)
+
+    train_df, val_df, test_df = dp.chronological_split(df)
+    return dp, fe, train_df, val_df, test_df, feature_cols
 
 
 def run_baseline_experiment() -> None:
@@ -50,23 +73,24 @@ def run_baseline_experiment() -> None:
 
     device = get_device()
 
-    # 1. Load & clean data
-    dp = DataProcessor(scaler_type="standard")
-    df = dp.load_data(DATA_PATH)
-    df = dp.handle_missing_intervals(df)
+    # Result logger
+    rl = ResultLogger("baseline", "jpm")
+    rl.log_config({
+        "data_path": DATA_PATH,
+        "window_size": WINDOW_SIZE,
+        "target": TARGET_COL,
+        "batch_size": BATCH_SIZE,
+        "epochs": NUM_EPOCHS,
+        "learning_rate": LEARNING_RATE,
+        "hidden_size": 64,
+        "num_layers": 2,
+        "dropout": 0.2,
+    })
 
-    # 2. Feature engineering
-    fe = FeatureEngineer()
-    df = fe.add_all_features(df)
-    feature_cols = fe.get_feature_names()
+    # 1. Data preparation
+    dp, fe, train_df, val_df, test_df, feature_cols = _prepare_data(DATA_PATH)
 
-    # 3. Compute targets
-    df = dp.compute_targets(df)
-
-    # 4. Chronological split
-    train_df, val_df, test_df = dp.chronological_split(df)
-
-    # 5. Scale features
+    # 2. Scale features
     dp.fit_scaler(train_df, feature_cols)
     X_train_scaled = dp.transform(train_df, feature_cols)
     X_val_scaled = dp.transform(val_df, feature_cols)
@@ -76,12 +100,12 @@ def run_baseline_experiment() -> None:
     y_val = val_df[TARGET_COL].values
     y_test = test_df[TARGET_COL].values
 
-    # 6. Create sliding windows
+    # 3. Create sliding windows
     X_train, y_train = dp.create_windows(X_train_scaled, y_train, WINDOW_SIZE)
     X_val, y_val = dp.create_windows(X_val_scaled, y_val, WINDOW_SIZE)
     X_test, y_test = dp.create_windows(X_test_scaled, y_test, WINDOW_SIZE)
 
-    # 7. Build model
+    # 4. Build model
     num_features = X_train.shape[2]
     model = BiLSTMModel(
         input_size=num_features,
@@ -89,7 +113,7 @@ def run_baseline_experiment() -> None:
         num_layers=2,
         dropout=0.2
     )
-    
+
     trainer = Trainer(
         model=model,
         device=device,
@@ -97,35 +121,205 @@ def run_baseline_experiment() -> None:
         loss_fn="mse"
     )
 
-    # 8. Train
+    # 5. Train
     train_loader, val_loader = trainer.create_dataloaders(
         X_train, y_train, X_val, y_val, batch_size=BATCH_SIZE
     )
-    
-    logger.info("Training pure baseline LSTM model...")
+
+    logger.info("Training pure baseline BiLSTM model...")
     best_val_loss = trainer.train(
-        train_loader, val_loader, epochs=NUM_EPOCHS, patience=10, verbose=True
+        train_loader, val_loader,
+        epochs=NUM_EPOCHS, patience=10, verbose=True,
+        result_logger=rl,
     )
-    
-    # 9. Evaluate
+
+    # 6. Evaluate
     logger.info("=" * 60)
     logger.info("BASELINE EVALUATION (TEST SET)")
     logger.info("=" * 60)
     metrics = trainer.evaluate(X_test, y_test)
-    
-    # Save checkpoint
+
+    # 7. Save everything
     chk_path = "checkpoints/baseline_jpm.pt"
     trainer.save_checkpoint(chk_path, dp, feature_cols, WINDOW_SIZE)
-    
-    logger.info("Experiment finished. Please record these results in 04_EXPERIMENTS.md")
+    rl.log_metrics(metrics)
+    rl.copy_checkpoint(chk_path)
+
+    logger.info("Baseline experiment complete. Results saved to %s", rl.get_run_dir())
+
+
+def run_ga_optimization(
+    mode: str = "features_only",
+    ga_epochs: int = 5,
+    data_fraction: float = 0.2,
+    population_size: int = 10,
+    num_generations: int = 5,
+) -> None:
+    """Run GA optimization and then retrain the best chromosome on full data.
+
+    Args:
+        mode: "features_only" or "full".
+        ga_epochs: Epochs per individual during GA search.
+        data_fraction: Fraction of data for GA fitness evaluations.
+        population_size: GA population size.
+        num_generations: GA generations.
+    """
+    label = f"ga_{mode}"
+    logger.info("=" * 60)
+    logger.info("GA OPTIMIZATION -- mode=%s", mode)
+    logger.info("=" * 60)
+
+    # Result logger
+    rl = ResultLogger(label, "jpm")
+    rl.log_config({
+        "mode": mode,
+        "ga_epochs": ga_epochs,
+        "data_fraction": data_fraction,
+        "population_size": population_size,
+        "num_generations": num_generations,
+        "data_path": "DATA/JPM.csv",
+    })
+
+    # 1. Data preparation
+    dp, fe, train_df, val_df, test_df, feature_cols = _prepare_data("DATA/JPM.csv")
+
+    # 2. Run GA
+    ga = GAOptimizer(
+        feature_names=feature_cols,
+        train_df=train_df,
+        val_df=val_df,
+        mode=mode,
+        population_size=population_size,
+        num_generations=num_generations,
+        ga_epochs=ga_epochs,
+        data_fraction=data_fraction,
+        result_logger=rl,
+    )
+    result = ga.run()
+
+    # 3. Retrain the best chromosome on the FULL dataset
+    best = result["best_chromosome"]
+    logger.info("=" * 60)
+    logger.info("RETRAINING BEST CHROMOSOME ON FULL DATA")
+    logger.info("=" * 60)
+
+    active_features = best.get("selected_features", feature_cols)
+    window_size = best.get("window_size", 12)
+    hidden_units = best.get("hidden_units", 64)
+    dropout = best.get("dropout", 0.2)
+    learning_rate = best.get("learning_rate", 1e-3)
+    look_forward = best.get("look_forward", 1)
+    target_col = f"Target_{look_forward}_Tick"
+
+    device = get_device()
+
+    # Scale on full training data
+    dp_full = DataProcessor(scaler_type="standard")
+    dp_full.fit_scaler(train_df, active_features)
+    X_train_scaled = dp_full.transform(train_df, active_features)
+    X_val_scaled = dp_full.transform(val_df, active_features)
+    X_test_scaled = dp_full.transform(test_df, active_features)
+
+    y_train = train_df[target_col].values
+    y_val = val_df[target_col].values
+    y_test = test_df[target_col].values
+
+    X_train_w, y_train_w = dp_full.create_windows(X_train_scaled, y_train, window_size)
+    X_val_w, y_val_w = dp_full.create_windows(X_val_scaled, y_val, window_size)
+    X_test_w, y_test_w = dp_full.create_windows(X_test_scaled, y_test, window_size)
+
+    model = BiLSTMModel(
+        input_size=len(active_features),
+        hidden_size=hidden_units,
+        num_layers=2,
+        dropout=dropout,
+    )
+
+    trainer = Trainer(
+        model=model,
+        device=device,
+        learning_rate=learning_rate,
+        loss_fn="mse",
+    )
+
+    train_loader, val_loader = trainer.create_dataloaders(
+        X_train_w, y_train_w, X_val_w, y_val_w, batch_size=64,
+    )
+
+    trainer.train(
+        train_loader, val_loader,
+        epochs=50, patience=10, verbose=True,
+        result_logger=rl,
+    )
+
+    # Evaluate
+    logger.info("=" * 60)
+    logger.info("GA BEST CHROMOSOME -- FINAL TEST EVALUATION")
+    logger.info("=" * 60)
+    metrics = trainer.evaluate(X_test_w, y_test_w)
+
+    chk_path = f"checkpoints/{label}_best_jpm.pt"
+    trainer.save_checkpoint(chk_path, dp_full, active_features, window_size)
+    rl.log_metrics(metrics)
+    rl.copy_checkpoint(chk_path)
+
+    logger.info("GA experiment complete. Results saved to %s", rl.get_run_dir())
+
+
+def run_ga_fast_test() -> None:
+    """Quick GA test using 20% data and 5 epochs per individual.
+
+    For local CPU testing to verify the pipeline works.
+    """
+    run_ga_optimization(
+        mode="features_only",
+        ga_epochs=5,
+        data_fraction=0.2,
+        population_size=6,
+        num_generations=3,
+    )
+
+
+def run_ga_full_gpu() -> None:
+    """Full GA run using 100% data and 50 epochs per individual.
+
+    Meant for deployment on an external GPU. No shortcuts.
+    """
+    run_ga_optimization(
+        mode="full",
+        ga_epochs=50,
+        data_fraction=1.0,
+        population_size=20,
+        num_generations=30,
+    )
 
 
 def run_pipeline() -> None:
     """Execute the full forecasting pipeline end-to-end."""
-    # For now, just route to baseline
     run_baseline_experiment()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """CLI entry point with subcommands."""
+    parser = argparse.ArgumentParser(description="Financial Forecasting Pipeline")
+    parser.add_argument(
+        "command",
+        choices=["baseline", "ga_fast", "ga_full", "pipeline"],
+        help="Which experiment to run.",
+    )
+    args = parser.parse_args()
+
     setup_logging()
-    run_pipeline()
+
+    if args.command == "baseline":
+        run_baseline_experiment()
+    elif args.command == "ga_fast":
+        run_ga_fast_test()
+    elif args.command == "ga_full":
+        run_ga_full_gpu()
+    elif args.command == "pipeline":
+        run_pipeline()
+
+
+if __name__ == "__main__":
+    main()
