@@ -13,7 +13,7 @@ import sys
 from data_processor import DataProcessor
 from feature_engineer import FeatureEngineer
 from ga_optimizer import GAOptimizer
-from model_builder import BiLSTMModel, get_device
+from model_builder import BiLSTMModel, BiLSTMAttentionModel, get_device
 from result_logger import ResultLogger
 from trainer import Trainer
 
@@ -294,6 +294,160 @@ def run_ga_full_gpu() -> None:
     )
 
 
+def run_time_horizon_experiment() -> None:
+    """Run Experiment Phase 2: Time Horizon Sweep.
+
+    Trains 3 separate baseline BiLSTMs -- one for each prediction
+    horizon (t+1, t+2, t+3) -- with identical hyperparameters.
+    Measures how prediction error degrades as the horizon extends.
+    """
+    logger.info("=" * 60)
+    logger.info("PHASE 2: TIME HORIZON SWEEP")
+    logger.info("=" * 60)
+
+    DATA_PATH = "DATA/JPM.csv"
+    WINDOW_SIZE = 12
+    BATCH_SIZE = 64
+    NUM_EPOCHS = 50
+    LEARNING_RATE = 1e-3
+
+    device = get_device()
+    dp, fe, train_df, val_df, test_df, feature_cols = _prepare_data(DATA_PATH)
+
+    dp.fit_scaler(train_df, feature_cols)
+    X_train_scaled = dp.transform(train_df, feature_cols)
+    X_val_scaled = dp.transform(val_df, feature_cols)
+    X_test_scaled = dp.transform(test_df, feature_cols)
+
+    for horizon in [1, 2, 3]:
+        target_col = f"Target_{horizon}_Tick"
+        logger.info("-" * 40)
+        logger.info("Training for horizon: %s", target_col)
+        logger.info("-" * 40)
+
+        rl = ResultLogger(f"time_horizon_t{horizon}", "jpm")
+        rl.log_config({
+            "data_path": DATA_PATH,
+            "window_size": WINDOW_SIZE,
+            "target": target_col,
+            "horizon": horizon,
+            "batch_size": BATCH_SIZE,
+            "epochs": NUM_EPOCHS,
+            "learning_rate": LEARNING_RATE,
+            "hidden_size": 64,
+            "num_layers": 2,
+            "dropout": 0.2,
+        })
+
+        y_train = train_df[target_col].values
+        y_val = val_df[target_col].values
+        y_test = test_df[target_col].values
+
+        X_train_w, y_train_w = dp.create_windows(X_train_scaled, y_train, WINDOW_SIZE)
+        X_val_w, y_val_w = dp.create_windows(X_val_scaled, y_val, WINDOW_SIZE)
+        X_test_w, y_test_w = dp.create_windows(X_test_scaled, y_test, WINDOW_SIZE)
+
+        model = BiLSTMModel(
+            input_size=len(feature_cols), hidden_size=64, num_layers=2, dropout=0.2,
+        )
+        trainer = Trainer(model=model, device=device, learning_rate=LEARNING_RATE)
+
+        train_loader, val_loader = trainer.create_dataloaders(
+            X_train_w, y_train_w, X_val_w, y_val_w, batch_size=BATCH_SIZE,
+        )
+        trainer.train(
+            train_loader, val_loader,
+            epochs=NUM_EPOCHS, patience=10, verbose=True, result_logger=rl,
+        )
+
+        metrics = trainer.evaluate(X_test_w, y_test_w)
+        chk_path = f"checkpoints/time_horizon_t{horizon}_jpm.pt"
+        trainer.save_checkpoint(chk_path, dp, feature_cols, WINDOW_SIZE)
+        rl.log_metrics(metrics)
+        rl.copy_checkpoint(chk_path)
+
+    logger.info("Time horizon sweep complete.")
+
+
+def run_attention_comparison() -> None:
+    """Run Research Question #4: BiLSTM vs BiLSTM+Attention comparison.
+
+    Trains both models with identical hyperparameters and compares
+    test-set metrics to determine if Attention improves results.
+    """
+    logger.info("=" * 60)
+    logger.info("ATTENTION MECHANISM COMPARISON")
+    logger.info("=" * 60)
+
+    DATA_PATH = "DATA/JPM.csv"
+    WINDOW_SIZE = 12
+    TARGET_COL = "Target_1_Tick"
+    BATCH_SIZE = 64
+    NUM_EPOCHS = 50
+    LEARNING_RATE = 1e-3
+
+    device = get_device()
+    dp, fe, train_df, val_df, test_df, feature_cols = _prepare_data(DATA_PATH)
+
+    dp.fit_scaler(train_df, feature_cols)
+    X_train_scaled = dp.transform(train_df, feature_cols)
+    X_val_scaled = dp.transform(val_df, feature_cols)
+    X_test_scaled = dp.transform(test_df, feature_cols)
+
+    y_train = train_df[TARGET_COL].values
+    y_val = val_df[TARGET_COL].values
+    y_test = test_df[TARGET_COL].values
+
+    X_train_w, y_train_w = dp.create_windows(X_train_scaled, y_train, WINDOW_SIZE)
+    X_val_w, y_val_w = dp.create_windows(X_val_scaled, y_val, WINDOW_SIZE)
+    X_test_w, y_test_w = dp.create_windows(X_test_scaled, y_test, WINDOW_SIZE)
+
+    model_classes = {
+        "bilstm": BiLSTMModel,
+        "bilstm_attn": BiLSTMAttentionModel,
+    }
+
+    for label, ModelClass in model_classes.items():
+        logger.info("-" * 40)
+        logger.info("Training model: %s", label)
+        logger.info("-" * 40)
+
+        rl = ResultLogger(f"attention_{label}", "jpm")
+        rl.log_config({
+            "data_path": DATA_PATH,
+            "model": label,
+            "window_size": WINDOW_SIZE,
+            "target": TARGET_COL,
+            "batch_size": BATCH_SIZE,
+            "epochs": NUM_EPOCHS,
+            "learning_rate": LEARNING_RATE,
+            "hidden_size": 64,
+            "num_layers": 2,
+            "dropout": 0.2,
+        })
+
+        model = ModelClass(
+            input_size=len(feature_cols), hidden_size=64, num_layers=2, dropout=0.2,
+        )
+        trainer = Trainer(model=model, device=device, learning_rate=LEARNING_RATE)
+
+        train_loader, val_loader = trainer.create_dataloaders(
+            X_train_w, y_train_w, X_val_w, y_val_w, batch_size=BATCH_SIZE,
+        )
+        trainer.train(
+            train_loader, val_loader,
+            epochs=NUM_EPOCHS, patience=10, verbose=True, result_logger=rl,
+        )
+
+        metrics = trainer.evaluate(X_test_w, y_test_w)
+        chk_path = f"checkpoints/attention_{label}_jpm.pt"
+        trainer.save_checkpoint(chk_path, dp, feature_cols, WINDOW_SIZE)
+        rl.log_metrics(metrics)
+        rl.copy_checkpoint(chk_path)
+
+    logger.info("Attention comparison complete. Use result_viewer.py to compare.")
+
+
 def run_pipeline() -> None:
     """Execute the full forecasting pipeline end-to-end."""
     run_baseline_experiment()
@@ -304,7 +458,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Financial Forecasting Pipeline")
     parser.add_argument(
         "command",
-        choices=["baseline", "ga_fast", "ga_full", "pipeline"],
+        choices=["baseline", "time_horizon", "attention", "ga_fast", "ga_full", "pipeline"],
         help="Which experiment to run.",
     )
     args = parser.parse_args()
@@ -313,6 +467,10 @@ def main() -> None:
 
     if args.command == "baseline":
         run_baseline_experiment()
+    elif args.command == "time_horizon":
+        run_time_horizon_experiment()
+    elif args.command == "attention":
+        run_attention_comparison()
     elif args.command == "ga_fast":
         run_ga_fast_test()
     elif args.command == "ga_full":
