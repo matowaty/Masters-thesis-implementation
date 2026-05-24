@@ -49,6 +49,7 @@ class DataProcessor:
         train_ratio: float = 0.8,
         val_ratio: float = 0.1,
         test_ratio: float = 0.1,
+        target_scaling_factor: float = 1000.0,
     ) -> None:
         """Initialise the DataProcessor.
 
@@ -57,6 +58,7 @@ class DataProcessor:
             train_ratio: Fraction of data for training (default 0.8).
             val_ratio: Fraction of data for validation (default 0.1).
             test_ratio: Fraction of data for testing (default 0.1).
+            target_scaling_factor: Multiplier to scale small return targets (default 1000.0).
 
         Raises:
             ValueError: If ratios do not sum to 1.0 or scaler_type is invalid.
@@ -82,6 +84,7 @@ class DataProcessor:
         self._scaler_fitted = False
         self.feature_columns: List[str] = []
         self.target_columns: List[str] = list(_TARGET_COLUMNS)
+        self.target_scaling_factor = target_scaling_factor
         # Per-stock scalers for multi-asset mode
         self.stock_scalers: Dict[str, StandardScaler | MinMaxScaler] = {}
 
@@ -439,10 +442,10 @@ class DataProcessor:
         X_val_scaled = self.transform(val_df, feature_cols)
         X_test_scaled = self.transform(test_df, feature_cols)
 
-        # 6. Extract target arrays
-        y_train = train_df[target_col].values
-        y_val = val_df[target_col].values
-        y_test = test_df[target_col].values
+        # 6. Extract target arrays and apply scaling factor
+        y_train = train_df[target_col].values * self.target_scaling_factor
+        y_val = val_df[target_col].values * self.target_scaling_factor
+        y_test = test_df[target_col].values * self.target_scaling_factor
 
         # 7. Create sliding windows
         X_train, y_train = self.create_windows(X_train_scaled, y_train, window_size)
@@ -603,7 +606,7 @@ class DataProcessor:
             (test_df, "X_test", "y_test"),
         ]:
             X_scaled = scaler.transform(split_df[feature_cols].values)
-            y = split_df[target_col].values
+            y = split_df[target_col].values * self.target_scaling_factor
             X_w, y_w = self.create_windows(X_scaled, y, window_size)
             arrays[x_key].append(X_w)
             arrays[y_key].append(y_w)

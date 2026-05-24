@@ -374,14 +374,14 @@ class GAOptimizer:
         window_size: int,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Scale and window for single-stock mode."""
-        dp = DataProcessor(scaler_type="standard")
+        dp = DataProcessor(scaler_type="standard", target_scaling_factor=1000.0)
         dp.fit_scaler(self.train_df, active_features)
 
         X_train_scaled = dp.transform(self.train_df, active_features)
         X_val_scaled = dp.transform(self.val_df, active_features)
 
-        y_train = self.train_df[target_col].values
-        y_val = self.val_df[target_col].values
+        y_train = self.train_df[target_col].values * dp.target_scaling_factor
+        y_val = self.val_df[target_col].values * dp.target_scaling_factor
 
         X_train_w, y_train_w = dp.create_windows(X_train_scaled, y_train, window_size)
         X_val_w, y_val_w = dp.create_windows(X_val_scaled, y_val, window_size)
@@ -398,7 +398,7 @@ class GAOptimizer:
         from sklearn.preprocessing import StandardScaler
 
         X_trains, y_trains, X_vals, y_vals = [], [], [], []
-        dp = DataProcessor(scaler_type="standard")
+        dp = DataProcessor(scaler_type="standard", target_scaling_factor=1000.0)
 
         for ticker in self.train_dfs:
             scaler = StandardScaler()
@@ -406,8 +406,8 @@ class GAOptimizer:
 
             X_tr = scaler.transform(self.train_dfs[ticker][active_features].values)
             X_va = scaler.transform(self.val_dfs[ticker][active_features].values)
-            y_tr = self.train_dfs[ticker][target_col].values
-            y_va = self.val_dfs[ticker][target_col].values
+            y_tr = self.train_dfs[ticker][target_col].values * dp.target_scaling_factor
+            y_va = self.val_dfs[ticker][target_col].values * dp.target_scaling_factor
 
             X_tr_w, y_tr_w = dp.create_windows(X_tr, y_tr, window_size)
             X_va_w, y_va_w = dp.create_windows(X_va, y_va, window_size)
@@ -443,7 +443,8 @@ class GAOptimizer:
             model=model,
             device=self.device,
             learning_rate=chrom.learning_rate,
-            loss_fn="mse",
+            loss_fn="directional",
+            target_scaling_factor=1000.0,
         )
 
         train_loader, val_loader = trainer.create_dataloaders(

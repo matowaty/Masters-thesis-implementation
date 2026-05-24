@@ -39,7 +39,7 @@ def _prepare_data(data_path: str = "DATA/JPM.csv"):
     Returns:
         Tuple of (dp, fe, train_df, val_df, test_df, feature_cols).
     """
-    dp = DataProcessor(scaler_type="standard")
+    dp = DataProcessor(scaler_type="standard", target_scaling_factor=1000.0)
     df = dp.load_data(data_path)
     df = dp.handle_missing_intervals(df)
 
@@ -69,7 +69,7 @@ def run_baseline_experiment() -> None:
     TARGET_COL = "Target_1_Tick"
     BATCH_SIZE = 64
     NUM_EPOCHS = 50
-    LEARNING_RATE = 1e-3
+    LEARNING_RATE = 1e-5
 
     device = get_device()
 
@@ -96,9 +96,9 @@ def run_baseline_experiment() -> None:
     X_val_scaled = dp.transform(val_df, feature_cols)
     X_test_scaled = dp.transform(test_df, feature_cols)
 
-    y_train = train_df[TARGET_COL].values
-    y_val = val_df[TARGET_COL].values
-    y_test = test_df[TARGET_COL].values
+    y_train = train_df[TARGET_COL].values * dp.target_scaling_factor
+    y_val = val_df[TARGET_COL].values * dp.target_scaling_factor
+    y_test = test_df[TARGET_COL].values * dp.target_scaling_factor
 
     # 3. Create sliding windows
     X_train, y_train = dp.create_windows(X_train_scaled, y_train, WINDOW_SIZE)
@@ -118,7 +118,8 @@ def run_baseline_experiment() -> None:
         model=model,
         device=device,
         learning_rate=LEARNING_RATE,
-        loss_fn="mse"
+        loss_fn="directional",
+        target_scaling_factor=1000.0
     )
 
     # 5. Train
@@ -220,9 +221,9 @@ def run_ga_optimization(
     X_val_scaled = dp_full.transform(val_df, active_features)
     X_test_scaled = dp_full.transform(test_df, active_features)
 
-    y_train = train_df[target_col].values
-    y_val = val_df[target_col].values
-    y_test = test_df[target_col].values
+    y_train = train_df[target_col].values * dp_full.target_scaling_factor
+    y_val = val_df[target_col].values * dp_full.target_scaling_factor
+    y_test = test_df[target_col].values * dp_full.target_scaling_factor
 
     X_train_w, y_train_w = dp_full.create_windows(X_train_scaled, y_train, window_size)
     X_val_w, y_val_w = dp_full.create_windows(X_val_scaled, y_val, window_size)
@@ -239,7 +240,8 @@ def run_ga_optimization(
         model=model,
         device=device,
         learning_rate=learning_rate,
-        loss_fn="mse",
+        loss_fn="directional",
+        target_scaling_factor=1000.0
     )
 
     train_loader, val_loader = trainer.create_dataloaders(
@@ -339,9 +341,9 @@ def run_time_horizon_experiment() -> None:
             "dropout": 0.2,
         })
 
-        y_train = train_df[target_col].values
-        y_val = val_df[target_col].values
-        y_test = test_df[target_col].values
+        y_train = train_df[target_col].values * dp.target_scaling_factor
+        y_val = val_df[target_col].values * dp.target_scaling_factor
+        y_test = test_df[target_col].values * dp.target_scaling_factor
 
         X_train_w, y_train_w = dp.create_windows(X_train_scaled, y_train, WINDOW_SIZE)
         X_val_w, y_val_w = dp.create_windows(X_val_scaled, y_val, WINDOW_SIZE)
@@ -350,7 +352,13 @@ def run_time_horizon_experiment() -> None:
         model = BiLSTMModel(
             input_size=len(feature_cols), hidden_size=64, num_layers=2, dropout=0.2,
         )
-        trainer = Trainer(model=model, device=device, learning_rate=LEARNING_RATE)
+        trainer = Trainer(
+            model=model,
+            device=device,
+            learning_rate=LEARNING_RATE,
+            loss_fn="directional",
+            target_scaling_factor=1000.0
+        )
 
         train_loader, val_loader = trainer.create_dataloaders(
             X_train_w, y_train_w, X_val_w, y_val_w, batch_size=BATCH_SIZE,
@@ -394,9 +402,9 @@ def run_attention_comparison() -> None:
     X_val_scaled = dp.transform(val_df, feature_cols)
     X_test_scaled = dp.transform(test_df, feature_cols)
 
-    y_train = train_df[TARGET_COL].values
-    y_val = val_df[TARGET_COL].values
-    y_test = test_df[TARGET_COL].values
+    y_train = train_df[TARGET_COL].values * dp.target_scaling_factor
+    y_val = val_df[TARGET_COL].values * dp.target_scaling_factor
+    y_test = test_df[TARGET_COL].values * dp.target_scaling_factor
 
     X_train_w, y_train_w = dp.create_windows(X_train_scaled, y_train, WINDOW_SIZE)
     X_val_w, y_val_w = dp.create_windows(X_val_scaled, y_val, WINDOW_SIZE)
@@ -429,7 +437,13 @@ def run_attention_comparison() -> None:
         model = ModelClass(
             input_size=len(feature_cols), hidden_size=64, num_layers=2, dropout=0.2,
         )
-        trainer = Trainer(model=model, device=device, learning_rate=LEARNING_RATE)
+        trainer = Trainer(
+            model=model,
+            device=device,
+            learning_rate=LEARNING_RATE,
+            loss_fn="directional",
+            target_scaling_factor=1000.0
+        )
 
         train_loader, val_loader = trainer.create_dataloaders(
             X_train_w, y_train_w, X_val_w, y_val_w, batch_size=BATCH_SIZE,
@@ -520,7 +534,13 @@ def run_baseline_multi() -> None:
         input_size=num_features, hidden_size=64, num_layers=2, dropout=0.2,
     )
 
-    trainer = Trainer(model=model, device=device, learning_rate=LEARNING_RATE)
+    trainer = Trainer(
+        model=model,
+        device=device,
+        learning_rate=LEARNING_RATE,
+        loss_fn="directional",
+        target_scaling_factor=1000.0
+    )
 
     train_loader, val_loader = trainer.create_dataloaders(
         data["X_train"], data["y_train"],
@@ -611,7 +631,7 @@ def run_ga_optimization_multi(
 
     device = get_device()
 
-    dp_full = DataProcessor(scaler_type="standard")
+    dp_full = DataProcessor(scaler_type="standard", target_scaling_factor=1000.0)
     data = dp_full.scale_and_window_multi(
         train_dfs, val_dfs, test_dfs,
         active_features, target_col, window_size,
@@ -624,7 +644,13 @@ def run_ga_optimization_multi(
         dropout=dropout,
     )
 
-    trainer = Trainer(model=model, device=device, learning_rate=learning_rate)
+    trainer = Trainer(
+        model=model,
+        device=device,
+        learning_rate=learning_rate,
+        loss_fn="directional",
+        target_scaling_factor=1000.0
+    )
 
     train_loader, val_loader = trainer.create_dataloaders(
         data["X_train"], data["y_train"],

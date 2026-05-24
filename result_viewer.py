@@ -28,7 +28,9 @@ def print_table(title: str, data: dict) -> None:
     print(f"{'=' * 50}")
     max_key_len = max(len(str(k)) for k in data.keys()) if data else 10
     for key, value in data.items():
-        if isinstance(value, float):
+        if key in ("rmse_bps", "mae_bps"):
+            print(f"  {str(key):<{max_key_len + 2}} {value:.2f} bps")
+        elif isinstance(value, float):
             print(f"  {str(key):<{max_key_len + 2}} {value:.6f}")
         else:
             print(f"  {str(key):<{max_key_len + 2}} {value}")

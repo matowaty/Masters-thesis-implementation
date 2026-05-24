@@ -1,0 +1,5 @@
+RESULTS/
+checkpoints/
+artifacts/
+__pycache__/
+*.pt

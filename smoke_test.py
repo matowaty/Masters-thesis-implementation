@@ -88,7 +88,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 1. Load & clean data
     # ------------------------------------------------------------------
-    dp = DataProcessor(scaler_type="standard")
+    dp = DataProcessor(scaler_type="standard", target_scaling_factor=1000.0)
     df = dp.load_data(DATA_PATH)
     df = dp.handle_missing_intervals(df)
     logger.info("Raw data shape: %s", df.shape)
@@ -122,8 +122,8 @@ def main() -> None:
     X_train_scaled = dp.transform(train_df, feature_cols)
     X_val_scaled = dp.transform(val_df, feature_cols)
 
-    y_train = train_df[TARGET_COL].values
-    y_val = val_df[TARGET_COL].values
+    y_train = train_df[TARGET_COL].values * dp.target_scaling_factor
+    y_val = val_df[TARGET_COL].values * dp.target_scaling_factor
 
     # ------------------------------------------------------------------
     # 6. Create sliding windows
@@ -182,7 +182,7 @@ def main() -> None:
             optimizer.step()
             train_losses.append(loss.item())
 
-        avg_train_loss = np.mean(train_losses)
+        avg_train_loss = np.mean(train_losses) / (dp.target_scaling_factor ** 2)
 
         # --- Validate ---
         model.eval()
@@ -192,7 +192,12 @@ def main() -> None:
                 X_batch = X_batch.to(device)
                 y_batch = y_batch.to(device)
                 preds = model(X_batch).squeeze(-1)
-                loss = criterion(preds, y_batch)
+                
+                # Unscale to match validation loss
+                unscaled_preds = preds / dp.target_scaling_factor
+                unscaled_y = y_batch / dp.target_scaling_factor
+                loss = criterion(unscaled_preds, unscaled_y)
+                
                 val_losses.append(loss.item())
 
         avg_val_loss = np.mean(val_losses)

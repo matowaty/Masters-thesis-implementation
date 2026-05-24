@@ -41,6 +41,9 @@ _RENAME_MAP = {
 
 # Features we actually keep (after renaming), in canonical order.
 _ENGINEERED_FEATURES = [
+    "Past_Return_1_Tick",
+    "Past_Return_2_Tick",
+    "Past_Return_5_Tick",
     "HL_Spread",
     "CO_Spread",
     "BB_High",
@@ -112,6 +115,9 @@ class FeatureEngineer:
         df = self.add_vwap(df)
         df = self.add_obv(df)
 
+        # --- Stationary Past Returns ---
+        df = self.add_past_returns(df)
+
         # Rename pandas-ta auto-generated column names to our convention
         df = df.rename(columns=_RENAME_MAP)
 
@@ -124,16 +130,16 @@ class FeatureEngineer:
         df = df.dropna()
         n_dropped = n_before - len(df)
 
-        # Store the feature names (OHLCV base + engineered)
-        ohlcv = ["Open", "High", "Low", "Close", "Volume"]
-        self.feature_names = ohlcv + [
+        # Store the feature names (Exclude non-stationary absolute prices)
+        base_features = ["Volume"]
+        self.feature_names = base_features + [
             f for f in _ENGINEERED_FEATURES if f in df.columns
         ]
 
         logger.info(
             "Added all features -- %d indicator columns, "
             "dropped %d NaN warm-up rows, %d rows remaining",
-            len(self.feature_names) - len(ohlcv),
+            len(self.feature_names) - len(base_features),
             n_dropped,
             len(df),
         )
@@ -215,6 +221,18 @@ class FeatureEngineer:
     # ------------------------------------------------------------------
     # Trend & Momentum
     # ------------------------------------------------------------------
+
+    def add_past_returns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Compute the past rate of return for multiple lookbacks.
+        
+        This makes the momentum explicitly visible to the model as stationary features.
+        """
+        for ticks in [1, 2, 5]:
+            col_name = f"Past_Return_{ticks}_Tick"
+            df[col_name] = (df["Close"] - df["Close"].shift(ticks)) / df["Close"].shift(ticks)
+            
+        logger.debug("Added Past Returns (1, 2, 5 ticks)")
+        return df
 
     def add_sma(
         self, df: pd.DataFrame, periods: List[int] = None

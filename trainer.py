@@ -51,6 +51,31 @@ class EarlyStopping:
                 logger.info("Early stopping triggered after %d epochs without improvement", self.counter)
 
 
+class DirectionalLoss(nn.Module):
+    """Custom loss function that penalizes incorrect direction predictions."""
+    def __init__(self, penalty_factor: float = 5.0) -> None:
+        super().__init__()
+        self.penalty_factor = penalty_factor
+        self.base_loss = nn.HuberLoss(reduction='none')
+
+    def forward(self, y_pred: torch.Tensor, y_true: torch.Tensor) -> torch.Tensor:
+        loss = self.base_loss(y_pred, y_true)
+        
+        pred_sign = torch.sign(y_pred)
+        true_sign = torch.sign(y_true)
+        
+        # Mask for incorrect direction (ignoring flat true targets)
+        wrong_direction = (pred_sign != true_sign) & (true_sign != 0)
+        loss[wrong_direction] = loss[wrong_direction] * self.penalty_factor
+        
+        # Mask for cowardly "lazy" prediction (0.0)
+        # Using a small epsilon to catch floats effectively at zero
+        lazy_pred = torch.abs(y_pred) < 1e-6
+        loss[lazy_pred] = loss[lazy_pred] * self.penalty_factor
+        
+        return loss.mean()
+
+
 class Trainer:
     """Handles the PyTorch training loop and evaluation metrics."""
 
@@ -61,6 +86,7 @@ class Trainer:
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-5,
         loss_fn: str = "mse",
+        target_scaling_factor: float = 1000.0,
     ) -> None:
         """Initialize the Trainer.
 
@@ -70,9 +96,11 @@ class Trainer:
             learning_rate: Optimizer learning rate.
             weight_decay: L2 regularization penalty.
             loss_fn: Loss function name -- 'mse' or 'huber' (default 'mse').
+            target_scaling_factor: Multiplier used to scale return targets (default 1000.0).
         """
         self.model = model.to(device)
         self.device = device
+        self.target_scaling_factor = target_scaling_factor
         
         self.optimizer = optim.AdamW(
             self.model.parameters(), lr=learning_rate, weight_decay=weight_decay
@@ -80,6 +108,8 @@ class Trainer:
         
         if loss_fn.lower() == "huber":
             self.criterion = nn.HuberLoss()
+        elif loss_fn.lower() == "directional":
+            self.criterion = DirectionalLoss(penalty_factor=5.0)
         else:
             self.criterion = nn.MSELoss()
 
@@ -123,7 +153,7 @@ class Trainer:
     ) -> float:
         """Run one pass over the training data."""
         self.model.train()
-        total_loss = 0.0
+        total_unscaled_loss = 0.0
 
         iterator = dataloader
         if show_progress:
@@ -151,12 +181,19 @@ class Trainer:
             nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
             
             self.optimizer.step()
-            total_loss += loss.item()
+            
+            # Compute unscaled loss purely for perfectly comparable logging
+            with torch.no_grad():
+                unscaled_preds = preds / self.target_scaling_factor
+                unscaled_y = y_batch / self.target_scaling_factor
+                unscaled_loss = self.criterion(unscaled_preds, unscaled_y)
+                total_unscaled_loss += unscaled_loss.item()
 
             if show_progress:
                 iterator.set_postfix(loss=f"{loss.item():.6f}")
             
-        return total_loss / len(dataloader)
+        # Return the unscaled loss to match val loss exactly on charts
+        return total_unscaled_loss / len(dataloader)
 
     def _validate(self, dataloader: DataLoader) -> float:
         """Evaluate the model on the validation set."""
@@ -169,7 +206,12 @@ class Trainer:
                 y_batch = y_batch.to(self.device)
                 
                 preds = self.model(X_batch).squeeze(-1)
-                loss = self.criterion(preds, y_batch)
+                
+                # Unscale predictions and targets to calculate true unscaled val loss
+                unscaled_preds = preds / self.target_scaling_factor
+                unscaled_y = y_batch / self.target_scaling_factor
+                
+                loss = self.criterion(unscaled_preds, unscaled_y)
                 total_loss += loss.item()
                 
         return total_loss / len(dataloader)
@@ -262,30 +304,34 @@ class Trainer:
                 preds = self.model(X_batch).squeeze(-1)
                 all_preds.append(preds.cpu().numpy())
                 
-        y_pred = np.concatenate(all_preds)
+        # Unscale predictions and targets for real-world metrics
+        y_pred = np.concatenate(all_preds) / self.target_scaling_factor
+        y_test_unscaled = y_test / self.target_scaling_factor
         
         # Metrics
-        mse = mean_squared_error(y_test, y_pred)
+        mse = mean_squared_error(y_test_unscaled, y_pred)
         rmse = np.sqrt(mse)
-        mae = mean_absolute_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
+        mae = mean_absolute_error(y_test_unscaled, y_pred)
+        r2 = r2_score(y_test_unscaled, y_pred)
         
         # Directional Accuracy
         # Computes percentage of time the model correctly predicts the sign of the return
-        correct_direction = np.sign(y_pred) == np.sign(y_test)
+        correct_direction = np.sign(y_pred) == np.sign(y_test_unscaled)
         da = np.mean(correct_direction) * 100.0
         
         metrics = {
             "mse": mse,
             "rmse": rmse,
             "mae": mae,
+            "rmse_bps": rmse * 10000.0,
+            "mae_bps": mae * 10000.0,
             "r2": r2,
             "directional_accuracy": da,
         }
         
         logger.info(
-            "Test Evaluation -- RMSE: %.6f, MAE: %.6f, R2: %.4f, DA: %.2f%%",
-            rmse, mae, r2, da
+            "Test Evaluation -- RMSE: %.6f (%.1f bps), MAE: %.6f (%.1f bps), R2: %.4f, DA: %.2f%%",
+            rmse, rmse * 10000.0, mae, mae * 10000.0, r2, da
         )
         
         return metrics
@@ -311,6 +357,7 @@ class Trainer:
             "optimizer_state_dict": self.optimizer.state_dict(),
             "feature_names": feature_names,
             "window_size": window_size,
+            "target_scaling_factor": self.target_scaling_factor,
         }
         
         if data_processor.scaler is not None and data_processor._scaler_fitted:
@@ -346,9 +393,13 @@ class Trainer:
             data_processor.scaler = scaler
             data_processor._scaler_fitted = True
             
+        if "target_scaling_factor" in checkpoint:
+            self.target_scaling_factor = checkpoint["target_scaling_factor"]
+            
         logger.info("[OK] Checkpoint loaded from %s", path)
         
         return {
             "feature_names": checkpoint.get("feature_names", []),
             "window_size": checkpoint.get("window_size", 12),
+            "target_scaling_factor": self.target_scaling_factor,
         }
