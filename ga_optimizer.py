@@ -18,8 +18,10 @@ Fitness Function:
 """
 
 import logging
+import pickle
 import random
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -459,41 +461,57 @@ class GAOptimizer:
         penalty = self.complexity_penalty * sum(chrom.feature_mask)
         return rmse + penalty
 
-    def run(self) -> Dict[str, Any]:
+    def run(self, checkpoint_path: Optional[str] = None) -> Dict[str, Any]:
         """Execute the full evolutionary optimisation loop.
+
+        Supports resuming from a checkpoint saved by a previous run.
+        A checkpoint is saved after every generation so that a crash or
+        Colab timeout does not lose progress.
+
+        Args:
+            checkpoint_path: Path to save/load GA checkpoint. If the file
+                already exists, the run resumes from it. If None,
+                checkpointing is disabled.
 
         Returns:
             Dictionary containing:
                 - 'best_chromosome': Best Chromosome found (as dict).
                 - 'best_fitness': Its fitness score.
-                - 'history': Per-generation statistics.
         """
-        pop = self.toolbox.population(n=self.population_size)
-        hof = tools.HallOfFame(1)
         stats = tools.Statistics(lambda ind: ind.fitness.values[0])
         stats.register("min", np.min)
         stats.register("avg", np.mean)
         stats.register("max", np.max)
         stats.register("std", np.std)
 
-        logger.info("=" * 60)
-        logger.info(
-            "GA Optimization started -- mode=%s, pop=%d, gens=%d, epochs/ind=%d",
-            self.mode, self.population_size, self.num_generations, self.ga_epochs,
-        )
-        logger.info("=" * 60)
+        # Try to resume from checkpoint
+        start_gen, pop, hof = self._maybe_load_checkpoint(checkpoint_path)
 
-        # Evaluate initial population
-        fitnesses = list(map(self.toolbox.evaluate, pop))
-        for ind, fit in zip(pop, fitnesses):
-            ind.fitness.values = fit
-        hof.update(pop)
+        if start_gen == 0:
+            # Fresh run — initialise and evaluate generation 0
+            pop = self.toolbox.population(n=self.population_size)
+            hof = tools.HallOfFame(1)
 
-        record = stats.compile(pop)
-        self.log_generation(0, record)
+            logger.info("=" * 60)
+            logger.info(
+                "GA Optimization started -- mode=%s, pop=%d, gens=%d, epochs/ind=%d",
+                self.mode, self.population_size, self.num_generations, self.ga_epochs,
+            )
+            logger.info("=" * 60)
 
-        # Evolution loop
-        for gen in range(1, self.num_generations + 1):
+            fitnesses = list(map(self.toolbox.evaluate, pop))
+            for ind, fit in zip(pop, fitnesses):
+                ind.fitness.values = fit
+            hof.update(pop)
+
+            record = stats.compile(pop)
+            self.log_generation(0, record)
+
+            self._save_checkpoint(checkpoint_path, 0, pop, hof)
+            start_gen = 1
+
+        # Evolution loop (resumes from start_gen)
+        for gen in range(start_gen, self.num_generations + 1):
             # Selection
             offspring = self.toolbox.select(pop, len(pop))
             offspring = list(map(self.toolbox.clone, offspring))
@@ -524,6 +542,9 @@ class GAOptimizer:
             record = stats.compile(pop)
             self.log_generation(gen, record)
 
+            # Checkpoint after every generation
+            self._save_checkpoint(checkpoint_path, gen, pop, hof)
+
         # Decode the best individual
         best_ind = hof[0]
         best_chrom = Chromosome.from_vector(best_ind, self.num_features)
@@ -542,6 +563,81 @@ class GAOptimizer:
             "best_chromosome": best_dict,
             "best_fitness": best_fitness,
         }
+
+    # ------------------------------------------------------------------
+    # Checkpointing
+    # ------------------------------------------------------------------
+
+    def _save_checkpoint(
+        self,
+        path: Optional[str],
+        generation: int,
+        pop: list,
+        hof: tools.HallOfFame,
+    ) -> None:
+        """Save GA state to disk after a generation completes."""
+        if path is None:
+            return
+
+        ckpt = {
+            "generation": generation,
+            "population": [list(ind) for ind in pop],
+            "fitnesses": [ind.fitness.values for ind in pop],
+            "hof": [list(ind) for ind in hof],
+            "hof_fitnesses": [ind.fitness.values for ind in hof],
+            "random_state": random.getstate(),
+            "numpy_random_state": np.random.get_state(),
+        }
+
+        filepath = Path(path)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, "wb") as f:
+            pickle.dump(ckpt, f)
+
+        logger.info(
+            "[CHECKPOINT] Saved GA state after gen %d to %s", generation, filepath
+        )
+
+    def _maybe_load_checkpoint(
+        self,
+        path: Optional[str],
+    ) -> Tuple[int, Optional[list], Optional[tools.HallOfFame]]:
+        """Load GA checkpoint if it exists.
+
+        Returns:
+            Tuple of (start_generation, population, hall_of_fame).
+            If no checkpoint, returns (0, None, None).
+        """
+        if path is None or not Path(path).exists():
+            return 0, None, None
+
+        with open(path, "rb") as f:
+            ckpt = pickle.load(f)
+
+        # Restore RNG states for reproducibility
+        random.setstate(ckpt["random_state"])
+        np.random.set_state(ckpt["numpy_random_state"])
+
+        # Rebuild population with fitness values
+        pop = []
+        for genes, fit in zip(ckpt["population"], ckpt["fitnesses"]):
+            ind = creator.Individual(genes)
+            ind.fitness.values = fit
+            pop.append(ind)
+
+        # Rebuild hall of fame
+        hof = tools.HallOfFame(1)
+        for genes, fit in zip(ckpt["hof"], ckpt["hof_fitnesses"]):
+            ind = creator.Individual(genes)
+            ind.fitness.values = fit
+            hof.update([ind])
+
+        last_gen = ckpt["generation"]
+        logger.info(
+            "[CHECKPOINT] Resumed from gen %d / %d (file: %s)",
+            last_gen, self.num_generations, path,
+        )
+        return last_gen + 1, pop, hof
 
     def log_generation(self, gen: int, record: dict) -> None:
         """Log statistics for the current generation."""

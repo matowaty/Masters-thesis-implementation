@@ -7,6 +7,7 @@ and model persistence (saving/loading checkpoints).
 
 from result_logger import ResultLogger
 import logging
+import time
 from pathlib import Path
 from typing import Dict, Tuple, Optional
 
@@ -16,6 +17,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
 
 from data_processor import DataProcessor
 
@@ -115,12 +117,24 @@ class Trainer:
         
         return train_loader, val_loader
 
-    def _train_one_epoch(self, dataloader: DataLoader, max_grad_norm: float = 1.0) -> float:
+    def _train_one_epoch(
+        self, dataloader: DataLoader, max_grad_norm: float = 1.0,
+        epoch: int = 0, total_epochs: int = 0, show_progress: bool = False,
+    ) -> float:
         """Run one pass over the training data."""
         self.model.train()
         total_loss = 0.0
-        
-        for X_batch, y_batch in dataloader:
+
+        iterator = dataloader
+        if show_progress:
+            iterator = tqdm(
+                dataloader,
+                desc=f"Epoch {epoch:3d}/{total_epochs}",
+                leave=False,
+                unit="batch",
+            )
+
+        for X_batch, y_batch in iterator:
             X_batch = X_batch.to(self.device)
             y_batch = y_batch.to(self.device)
             
@@ -138,6 +152,9 @@ class Trainer:
             
             self.optimizer.step()
             total_loss += loss.item()
+
+            if show_progress:
+                iterator.set_postfix(loss=f"{loss.item():.6f}")
             
         return total_loss / len(dataloader)
 
@@ -183,15 +200,28 @@ class Trainer:
         
         if verbose:
             logger.info("Starting training on device %s for up to %d epochs", self.device, epochs)
-            
+
+        epoch_times = []
+
         for epoch in range(1, epochs + 1):
-            train_loss = self._train_one_epoch(train_loader)
+            t0 = time.time()
+            train_loss = self._train_one_epoch(
+                train_loader, epoch=epoch, total_epochs=epochs,
+                show_progress=verbose,
+            )
             val_loss = self._validate(val_loader)
+            elapsed = time.time() - t0
+            epoch_times.append(elapsed)
             
-            if verbose and (epoch % 5 == 0 or epoch == 1):
+            if verbose:
+                avg_time = sum(epoch_times) / len(epoch_times)
+                remaining = avg_time * (epochs - epoch)
+                eta_min, eta_sec = divmod(int(remaining), 60)
                 logger.info(
-                    "Epoch %3d/%d -- train_loss=%.6f  val_loss=%.6f",
-                    epoch, epochs, train_loss, val_loss
+                    "Epoch %3d/%d -- train_loss=%.6f  val_loss=%.6f  "
+                    "[%.1fs/epoch, ETA %dm%02ds]",
+                    epoch, epochs, train_loss, val_loss,
+                    elapsed, eta_min, eta_sec,
                 )
 
             if result_logger is not None:

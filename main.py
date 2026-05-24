@@ -195,7 +195,7 @@ def run_ga_optimization(
         data_fraction=data_fraction,
         result_logger=rl,
     )
-    result = ga.run()
+    result = ga.run(checkpoint_path=f"checkpoints/{label}_checkpoint.pkl")
 
     # 3. Retrain the best chromosome on the FULL dataset
     best = result["best_chromosome"]
@@ -593,7 +593,7 @@ def run_ga_optimization_multi(
         data_fraction=data_fraction,
         result_logger=rl,
     )
-    result = ga.run()
+    result = ga.run(checkpoint_path=f"checkpoints/{label}_checkpoint.pkl")
 
     # Retrain the best chromosome on the FULL multi-stock dataset
     best = result["best_chromosome"]
