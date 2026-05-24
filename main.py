@@ -453,30 +453,260 @@ def run_pipeline() -> None:
     run_baseline_experiment()
 
 
+# ------------------------------------------------------------------
+# Multi-Stock Experiments (Universal Model)
+# ------------------------------------------------------------------
+
+def _prepare_multi_data(data_dir: str = "DATA"):
+    """Multi-stock data preparation: load all, feature engineer, split per-stock.
+
+    Returns:
+        Tuple of (dp, train_dfs, val_dfs, test_dfs, feature_cols).
+    """
+    dp = DataProcessor(scaler_type="standard")
+    fe = FeatureEngineer()
+
+    stock_dfs, feature_cols = dp.load_and_engineer_all(data_dir, fe)
+    train_dfs, val_dfs, test_dfs = dp.split_all_stocks(stock_dfs)
+
+    return dp, train_dfs, val_dfs, test_dfs, feature_cols
+
+
+def run_baseline_multi() -> None:
+    """Run baseline experiment on ALL stocks combined (universal model).
+
+    Uses per-stock scaling and boundary-safe windowing so that sliding
+    windows never cross stock boundaries.  The model architecture and
+    hyperparameters are identical to the single-stock baseline.
+    """
+    logger.info("=" * 60)
+    logger.info("MULTI-STOCK BASELINE EXPERIMENT")
+    logger.info("=" * 60)
+
+    DATA_DIR = "DATA"
+    WINDOW_SIZE = 12
+    TARGET_COL = "Target_1_Tick"
+    BATCH_SIZE = 64
+    NUM_EPOCHS = 50
+    LEARNING_RATE = 1e-3
+
+    device = get_device()
+
+    rl = ResultLogger("baseline_multi", "all_stocks")
+    rl.log_config({
+        "data_dir": DATA_DIR,
+        "window_size": WINDOW_SIZE,
+        "target": TARGET_COL,
+        "batch_size": BATCH_SIZE,
+        "epochs": NUM_EPOCHS,
+        "learning_rate": LEARNING_RATE,
+        "hidden_size": 64,
+        "num_layers": 2,
+        "dropout": 0.2,
+        "scaling": "per-stock",
+        "mode": "multi-stock",
+    })
+
+    dp, train_dfs, val_dfs, test_dfs, feature_cols = _prepare_multi_data(DATA_DIR)
+
+    data = dp.scale_and_window_multi(
+        train_dfs, val_dfs, test_dfs,
+        feature_cols, TARGET_COL, WINDOW_SIZE,
+    )
+
+    # Build model — input shape is still [batch, window, features]
+    num_features = data["X_train"].shape[2]
+    model = BiLSTMModel(
+        input_size=num_features, hidden_size=64, num_layers=2, dropout=0.2,
+    )
+
+    trainer = Trainer(model=model, device=device, learning_rate=LEARNING_RATE)
+
+    train_loader, val_loader = trainer.create_dataloaders(
+        data["X_train"], data["y_train"],
+        data["X_val"], data["y_val"],
+        batch_size=BATCH_SIZE,
+    )
+
+    logger.info("Training universal BiLSTM on %d stocks...", len(train_dfs))
+    trainer.train(
+        train_loader, val_loader,
+        epochs=NUM_EPOCHS, patience=10, verbose=True,
+        result_logger=rl,
+    )
+
+    logger.info("=" * 60)
+    logger.info("MULTI-STOCK BASELINE EVALUATION (TEST SET)")
+    logger.info("=" * 60)
+    metrics = trainer.evaluate(data["X_test"], data["y_test"])
+
+    chk_path = "checkpoints/baseline_multi_all.pt"
+    trainer.save_checkpoint(chk_path, dp, feature_cols, WINDOW_SIZE)
+    rl.log_metrics(metrics)
+    rl.copy_checkpoint(chk_path)
+
+    logger.info("Multi-stock baseline complete. Results saved to %s", rl.get_run_dir())
+
+
+def run_ga_optimization_multi(
+    mode: str = "features_only",
+    ga_epochs: int = 5,
+    data_fraction: float = 0.2,
+    population_size: int = 10,
+    num_generations: int = 5,
+) -> None:
+    """Run GA optimization on ALL stocks combined (universal model).
+
+    Args:
+        mode: "features_only" or "full".
+        ga_epochs: Epochs per individual during GA search.
+        data_fraction: Fraction of per-stock data for GA fitness evaluations.
+        population_size: GA population size.
+        num_generations: GA generations.
+    """
+    label = f"ga_{mode}_multi"
+    logger.info("=" * 60)
+    logger.info("GA MULTI-STOCK OPTIMIZATION -- mode=%s", mode)
+    logger.info("=" * 60)
+
+    rl = ResultLogger(label, "all_stocks")
+    rl.log_config({
+        "mode": mode,
+        "ga_epochs": ga_epochs,
+        "data_fraction": data_fraction,
+        "population_size": population_size,
+        "num_generations": num_generations,
+        "data_dir": "DATA",
+        "scaling": "per-stock",
+    })
+
+    dp, train_dfs, val_dfs, test_dfs, feature_cols = _prepare_multi_data("DATA")
+
+    ga = GAOptimizer(
+        feature_names=feature_cols,
+        train_dfs=train_dfs,
+        val_dfs=val_dfs,
+        mode=mode,
+        population_size=population_size,
+        num_generations=num_generations,
+        ga_epochs=ga_epochs,
+        data_fraction=data_fraction,
+        result_logger=rl,
+    )
+    result = ga.run()
+
+    # Retrain the best chromosome on the FULL multi-stock dataset
+    best = result["best_chromosome"]
+    logger.info("=" * 60)
+    logger.info("RETRAINING BEST CHROMOSOME ON FULL MULTI-STOCK DATA")
+    logger.info("=" * 60)
+
+    active_features = best.get("selected_features", feature_cols)
+    window_size = best.get("window_size", 12)
+    hidden_units = best.get("hidden_units", 64)
+    dropout = best.get("dropout", 0.2)
+    learning_rate = best.get("learning_rate", 1e-3)
+    look_forward = best.get("look_forward", 1)
+    target_col = f"Target_{look_forward}_Tick"
+
+    device = get_device()
+
+    dp_full = DataProcessor(scaler_type="standard")
+    data = dp_full.scale_and_window_multi(
+        train_dfs, val_dfs, test_dfs,
+        active_features, target_col, window_size,
+    )
+
+    model = BiLSTMModel(
+        input_size=len(active_features),
+        hidden_size=hidden_units,
+        num_layers=2,
+        dropout=dropout,
+    )
+
+    trainer = Trainer(model=model, device=device, learning_rate=learning_rate)
+
+    train_loader, val_loader = trainer.create_dataloaders(
+        data["X_train"], data["y_train"],
+        data["X_val"], data["y_val"],
+        batch_size=64,
+    )
+
+    trainer.train(
+        train_loader, val_loader,
+        epochs=50, patience=10, verbose=True,
+        result_logger=rl,
+    )
+
+    logger.info("=" * 60)
+    logger.info("GA MULTI-STOCK BEST CHROMOSOME -- FINAL TEST EVALUATION")
+    logger.info("=" * 60)
+    metrics = trainer.evaluate(data["X_test"], data["y_test"])
+
+    chk_path = f"checkpoints/{label}_best_all.pt"
+    trainer.save_checkpoint(chk_path, dp_full, active_features, window_size)
+    rl.log_metrics(metrics)
+    rl.copy_checkpoint(chk_path)
+
+    logger.info("GA multi-stock experiment complete. Results saved to %s", rl.get_run_dir())
+
+
+def run_ga_fast_multi() -> None:
+    """Quick multi-stock GA test using 20% data and minimal generations."""
+    run_ga_optimization_multi(
+        mode="features_only",
+        ga_epochs=5,
+        data_fraction=0.2,
+        population_size=6,
+        num_generations=3,
+    )
+
+
+def run_ga_full_multi() -> None:
+    """Full multi-stock GA run for external GPU deployment."""
+    run_ga_optimization_multi(
+        mode="full",
+        ga_epochs=50,
+        data_fraction=1.0,
+        population_size=20,
+        num_generations=30,
+    )
+
+
+# ------------------------------------------------------------------
+# CLI
+# ------------------------------------------------------------------
+
 def main() -> None:
     """CLI entry point with subcommands."""
     parser = argparse.ArgumentParser(description="Financial Forecasting Pipeline")
     parser.add_argument(
         "command",
-        choices=["baseline", "time_horizon", "attention", "ga_fast", "ga_full", "pipeline"],
+        choices=[
+            # Single-stock experiments
+            "baseline", "time_horizon", "attention", "ga_fast", "ga_full",
+            "pipeline",
+            # Multi-stock (universal model) experiments
+            "baseline_multi", "ga_fast_multi", "ga_full_multi",
+        ],
         help="Which experiment to run.",
     )
     args = parser.parse_args()
 
     setup_logging()
 
-    if args.command == "baseline":
-        run_baseline_experiment()
-    elif args.command == "time_horizon":
-        run_time_horizon_experiment()
-    elif args.command == "attention":
-        run_attention_comparison()
-    elif args.command == "ga_fast":
-        run_ga_fast_test()
-    elif args.command == "ga_full":
-        run_ga_full_gpu()
-    elif args.command == "pipeline":
-        run_pipeline()
+    commands = {
+        "baseline": run_baseline_experiment,
+        "time_horizon": run_time_horizon_experiment,
+        "attention": run_attention_comparison,
+        "ga_fast": run_ga_fast_test,
+        "ga_full": run_ga_full_gpu,
+        "pipeline": run_pipeline,
+        "baseline_multi": run_baseline_multi,
+        "ga_fast_multi": run_ga_fast_multi,
+        "ga_full_multi": run_ga_full_multi,
+    }
+    commands[args.command]()
 
 
 if __name__ == "__main__":

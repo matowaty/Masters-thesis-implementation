@@ -16,7 +16,10 @@ Handles:
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from feature_engineer import FeatureEngineer
 
 import numpy as np
 import pandas as pd
@@ -72,12 +75,15 @@ class DataProcessor:
         self.val_ratio = val_ratio
         self.test_ratio = test_ratio
 
+        self._scaler_type = scaler_type
         self.scaler: Optional[StandardScaler | MinMaxScaler] = (
             StandardScaler() if scaler_type == "standard" else MinMaxScaler()
         )
         self._scaler_fitted = False
         self.feature_columns: List[str] = []
         self.target_columns: List[str] = list(_TARGET_COLUMNS)
+        # Per-stock scalers for multi-asset mode
+        self.stock_scalers: Dict[str, StandardScaler | MinMaxScaler] = {}
 
         logger.info(
             "DataProcessor initialised -- scaler=%s, split=%.0f/%.0f/%.0f",
@@ -86,6 +92,12 @@ class DataProcessor:
             val_ratio * 100,
             test_ratio * 100,
         )
+
+    def _create_scaler(self) -> StandardScaler | MinMaxScaler:
+        """Create a new scaler instance matching the configured type."""
+        if self._scaler_type == "standard":
+            return StandardScaler()
+        return MinMaxScaler()
 
     # ------------------------------------------------------------------
     # Data Loading
@@ -453,3 +465,145 @@ class DataProcessor:
             "X_test": X_test,
             "y_test": y_test,
         }
+
+    # ------------------------------------------------------------------
+    # Multi-Asset Pipeline
+    # ------------------------------------------------------------------
+
+    def load_and_engineer_all(
+        self,
+        data_dir: str,
+        feature_engineer: "FeatureEngineer",
+    ) -> Tuple[Dict[str, pd.DataFrame], List[str]]:
+        """Load all stocks, clean, engineer features, compute targets.
+
+        Args:
+            data_dir: Directory containing .csv files.
+            feature_engineer: FeatureEngineer instance.
+
+        Returns:
+            Tuple of (dict mapping ticker to prepared DataFrame, feature_cols).
+        """
+        raw_datasets = self.load_all_data(data_dir)
+        prepared: Dict[str, pd.DataFrame] = {}
+        feature_cols: Optional[List[str]] = None
+
+        for ticker, df in raw_datasets.items():
+            df = self.handle_missing_intervals(df)
+            df = feature_engineer.add_all_features(df)
+            if feature_cols is None:
+                feature_cols = feature_engineer.get_feature_names()
+            df = self.compute_targets(df)
+            prepared[ticker] = df
+            logger.info("[OK] %s fully prepared (%d rows)", ticker, len(df))
+
+        logger.info(
+            "Prepared %d stocks, %d features each",
+            len(prepared),
+            len(feature_cols or []),
+        )
+        return prepared, feature_cols or []
+
+    def split_all_stocks(
+        self,
+        stock_dfs: Dict[str, pd.DataFrame],
+    ) -> Tuple[
+        Dict[str, pd.DataFrame],
+        Dict[str, pd.DataFrame],
+        Dict[str, pd.DataFrame],
+    ]:
+        """Apply per-stock chronological splits.
+
+        Args:
+            stock_dfs: Dict mapping ticker to its full DataFrame.
+
+        Returns:
+            Tuple of (train_dfs, val_dfs, test_dfs) dicts.
+        """
+        train_dfs: Dict[str, pd.DataFrame] = {}
+        val_dfs: Dict[str, pd.DataFrame] = {}
+        test_dfs: Dict[str, pd.DataFrame] = {}
+
+        for ticker, df in stock_dfs.items():
+            train, val, test = self.chronological_split(df)
+            train_dfs[ticker] = train
+            val_dfs[ticker] = val
+            test_dfs[ticker] = test
+
+        total_train = sum(len(d) for d in train_dfs.values())
+        logger.info(
+            "Split %d stocks -- total train rows: %d", len(stock_dfs), total_train
+        )
+        return train_dfs, val_dfs, test_dfs
+
+    def scale_and_window_multi(
+        self,
+        train_dfs: Dict[str, pd.DataFrame],
+        val_dfs: Dict[str, pd.DataFrame],
+        test_dfs: Dict[str, pd.DataFrame],
+        feature_cols: List[str],
+        target_col: str = "Target_1_Tick",
+        window_size: int = 12,
+    ) -> Dict[str, np.ndarray]:
+        """Per-stock scaling and boundary-safe windowing, then concatenation.
+
+        Each stock gets its own scaler (fitted on training data only).
+        Windows never cross stock boundaries.
+
+        Args:
+            train_dfs: Per-stock training DataFrames.
+            val_dfs: Per-stock validation DataFrames.
+            test_dfs: Per-stock test DataFrames.
+            feature_cols: Feature column names to scale.
+            target_col: Target column name.
+            window_size: Sliding window size.
+
+        Returns:
+            Dict with keys X_train, y_train, X_val, y_val, X_test, y_test.
+        """
+        arrays = {k: [] for k in
+                  ["X_train", "y_train", "X_val", "y_val", "X_test", "y_test"]}
+
+        for ticker in train_dfs:
+            self._process_one_stock(
+                ticker, train_dfs[ticker], val_dfs[ticker], test_dfs[ticker],
+                feature_cols, target_col, window_size, arrays,
+            )
+
+        result = {k: np.concatenate(v) for k, v in arrays.items()}
+        logger.info(
+            "Multi-asset combined -- %d stocks, "
+            "X_train=%s, X_val=%s, X_test=%s",
+            len(train_dfs),
+            result["X_train"].shape,
+            result["X_val"].shape,
+            result["X_test"].shape,
+        )
+        return result
+
+    def _process_one_stock(
+        self,
+        ticker: str,
+        train_df: pd.DataFrame,
+        val_df: pd.DataFrame,
+        test_df: pd.DataFrame,
+        feature_cols: List[str],
+        target_col: str,
+        window_size: int,
+        arrays: Dict[str, List[np.ndarray]],
+    ) -> None:
+        """Scale and window a single stock, appending results to *arrays*."""
+        scaler = self._create_scaler()
+        scaler.fit(train_df[feature_cols].values)
+        self.stock_scalers[ticker] = scaler
+
+        for split_df, x_key, y_key in [
+            (train_df, "X_train", "y_train"),
+            (val_df, "X_val", "y_val"),
+            (test_df, "X_test", "y_test"),
+        ]:
+            X_scaled = scaler.transform(split_df[feature_cols].values)
+            y = split_df[target_col].values
+            X_w, y_w = self.create_windows(X_scaled, y, window_size)
+            arrays[x_key].append(X_w)
+            arrays[y_key].append(y_w)

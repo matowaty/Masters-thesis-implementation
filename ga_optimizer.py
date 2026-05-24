@@ -115,10 +115,15 @@ class Chromosome:
 class GAOptimizer:
     """Wraps the DEAP evolutionary loop for hyperparameter search.
 
+    Supports both single-stock mode (train_df/val_df) and multi-stock
+    mode (train_dfs/val_dfs dicts with per-stock DataFrames).
+
     Args:
         feature_names: List of all available feature column names.
-        train_df: Pre-split training DataFrame (with features + target columns).
-        val_df: Pre-split validation DataFrame.
+        train_df: Pre-split training DataFrame (single-stock mode).
+        val_df: Pre-split validation DataFrame (single-stock mode).
+        train_dfs: Dict of per-stock training DataFrames (multi-stock mode).
+        val_dfs: Dict of per-stock validation DataFrames (multi-stock mode).
         mode: "features_only" or "full".
         population_size: Individuals per generation.
         num_generations: Max generations.
@@ -132,8 +137,11 @@ class GAOptimizer:
     def __init__(
         self,
         feature_names: List[str],
-        train_df: "pd.DataFrame",
-        val_df: "pd.DataFrame",
+        train_df: Optional["pd.DataFrame"] = None,
+        val_df: Optional["pd.DataFrame"] = None,
+        *,
+        train_dfs: Optional[Dict[str, "pd.DataFrame"]] = None,
+        val_dfs: Optional[Dict[str, "pd.DataFrame"]] = None,
         mode: str = "features_only",
         population_size: int = 20,
         num_generations: int = 30,
@@ -156,19 +164,45 @@ class GAOptimizer:
         self.result_logger = result_logger
         self.device = get_device()
 
-        # Subsample data if needed for speed
-        if data_fraction < 1.0:
-            n_train = int(len(train_df) * data_fraction)
-            n_val = int(len(val_df) * data_fraction)
-            self.train_df = train_df.iloc[:n_train].copy()
-            self.val_df = val_df.iloc[:n_val].copy()
-            logger.info(
-                "GA using %.0f%% data subset: train=%d, val=%d",
-                data_fraction * 100, n_train, n_val,
-            )
+        # Determine single-stock vs multi-stock mode
+        self.multi_stock = train_dfs is not None
+
+        if self.multi_stock:
+            if data_fraction < 1.0:
+                self.train_dfs = {
+                    t: df.iloc[:int(len(df) * data_fraction)].copy()
+                    for t, df in train_dfs.items()
+                }
+                self.val_dfs = {
+                    t: df.iloc[:int(len(df) * data_fraction)].copy()
+                    for t, df in val_dfs.items()
+                }
+                logger.info(
+                    "GA multi-stock using %.0f%% data subset (%d stocks)",
+                    data_fraction * 100, len(self.train_dfs),
+                )
+            else:
+                self.train_dfs = {t: df.copy() for t, df in train_dfs.items()}
+                self.val_dfs = {t: df.copy() for t, df in val_dfs.items()}
+            # Not used in multi-stock mode
+            self.train_df = None
+            self.val_df = None
         else:
-            self.train_df = train_df.copy()
-            self.val_df = val_df.copy()
+            # Single-stock mode (original behavior)
+            if data_fraction < 1.0:
+                n_train = int(len(train_df) * data_fraction)
+                n_val = int(len(val_df) * data_fraction)
+                self.train_df = train_df.iloc[:n_train].copy()
+                self.val_df = val_df.iloc[:n_val].copy()
+                logger.info(
+                    "GA using %.0f%% data subset: train=%d, val=%d",
+                    data_fraction * 100, n_train, n_val,
+                )
+            else:
+                self.train_df = train_df.copy()
+                self.val_df = val_df.copy()
+            self.train_dfs = None
+            self.val_dfs = None
 
         self.gene_length = self.num_features + NUM_HP_GENES
         self._setup_deap_toolbox()
@@ -304,61 +338,126 @@ class GAOptimizer:
         if len(active_features) == 0:
             return (999.0,)  # penalty for empty feature set
 
-        # Select target column
         target_col = f"Target_{chrom.look_forward}_Tick"
 
         try:
-            # Scale only the active features
-            dp = DataProcessor(scaler_type="standard")
-            dp.fit_scaler(self.train_df, active_features)
+            if self.multi_stock:
+                X_train_w, y_train_w, X_val_w, y_val_w = (
+                    self._scale_and_window_multi(
+                        active_features, target_col, chrom.window_size
+                    )
+                )
+            else:
+                X_train_w, y_train_w, X_val_w, y_val_w = (
+                    self._scale_and_window_single(
+                        active_features, target_col, chrom.window_size
+                    )
+                )
 
-            X_train_scaled = dp.transform(self.train_df, active_features)
-            X_val_scaled = dp.transform(self.val_df, active_features)
-
-            y_train = self.train_df[target_col].values
-            y_val = self.val_df[target_col].values
-
-            # Window
-            X_train_w, y_train_w = dp.create_windows(X_train_scaled, y_train, chrom.window_size)
-            X_val_w, y_val_w = dp.create_windows(X_val_scaled, y_val, chrom.window_size)
-
-            # Build model
-            model = BiLSTMModel(
-                input_size=len(active_features),
-                hidden_size=chrom.hidden_units,
-                num_layers=2,
-                dropout=chrom.dropout,
+            fitness = self._train_and_score(
+                X_train_w, y_train_w, X_val_w, y_val_w,
+                active_features, chrom,
             )
-
-            trainer = Trainer(
-                model=model,
-                device=self.device,
-                learning_rate=chrom.learning_rate,
-                loss_fn="mse",
-            )
-
-            train_loader, val_loader = trainer.create_dataloaders(
-                X_train_w, y_train_w, X_val_w, y_val_w, batch_size=64
-            )
-
-            # Train for a limited number of epochs (no early stopping during GA)
-            best_val_loss = trainer.train(
-                train_loader, val_loader,
-                epochs=self.ga_epochs,
-                patience=self.ga_epochs + 1,  # effectively disabled
-                verbose=False,
-            )
-
-            # Fitness = RMSE + penalty
-            rmse = np.sqrt(best_val_loss)
-            penalty = self.complexity_penalty * sum(chrom.feature_mask)
-            fitness = rmse + penalty
 
         except Exception as exc:
             logger.warning("Individual evaluation failed: %s", exc)
             fitness = 999.0
 
         return (fitness,)
+
+    def _scale_and_window_single(
+        self,
+        active_features: List[str],
+        target_col: str,
+        window_size: int,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Scale and window for single-stock mode."""
+        dp = DataProcessor(scaler_type="standard")
+        dp.fit_scaler(self.train_df, active_features)
+
+        X_train_scaled = dp.transform(self.train_df, active_features)
+        X_val_scaled = dp.transform(self.val_df, active_features)
+
+        y_train = self.train_df[target_col].values
+        y_val = self.val_df[target_col].values
+
+        X_train_w, y_train_w = dp.create_windows(X_train_scaled, y_train, window_size)
+        X_val_w, y_val_w = dp.create_windows(X_val_scaled, y_val, window_size)
+
+        return X_train_w, y_train_w, X_val_w, y_val_w
+
+    def _scale_and_window_multi(
+        self,
+        active_features: List[str],
+        target_col: str,
+        window_size: int,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Per-stock scaling and boundary-safe windowing for multi-stock mode."""
+        from sklearn.preprocessing import StandardScaler
+
+        X_trains, y_trains, X_vals, y_vals = [], [], [], []
+        dp = DataProcessor(scaler_type="standard")
+
+        for ticker in self.train_dfs:
+            scaler = StandardScaler()
+            scaler.fit(self.train_dfs[ticker][active_features].values)
+
+            X_tr = scaler.transform(self.train_dfs[ticker][active_features].values)
+            X_va = scaler.transform(self.val_dfs[ticker][active_features].values)
+            y_tr = self.train_dfs[ticker][target_col].values
+            y_va = self.val_dfs[ticker][target_col].values
+
+            X_tr_w, y_tr_w = dp.create_windows(X_tr, y_tr, window_size)
+            X_va_w, y_va_w = dp.create_windows(X_va, y_va, window_size)
+
+            X_trains.append(X_tr_w)
+            y_trains.append(y_tr_w)
+            X_vals.append(X_va_w)
+            y_vals.append(y_va_w)
+
+        return (
+            np.concatenate(X_trains), np.concatenate(y_trains),
+            np.concatenate(X_vals), np.concatenate(y_vals),
+        )
+
+    def _train_and_score(
+        self,
+        X_train_w: np.ndarray,
+        y_train_w: np.ndarray,
+        X_val_w: np.ndarray,
+        y_val_w: np.ndarray,
+        active_features: List[str],
+        chrom: Chromosome,
+    ) -> float:
+        """Build, train model, and return fitness (RMSE + complexity penalty)."""
+        model = BiLSTMModel(
+            input_size=len(active_features),
+            hidden_size=chrom.hidden_units,
+            num_layers=2,
+            dropout=chrom.dropout,
+        )
+
+        trainer = Trainer(
+            model=model,
+            device=self.device,
+            learning_rate=chrom.learning_rate,
+            loss_fn="mse",
+        )
+
+        train_loader, val_loader = trainer.create_dataloaders(
+            X_train_w, y_train_w, X_val_w, y_val_w, batch_size=64
+        )
+
+        best_val_loss = trainer.train(
+            train_loader, val_loader,
+            epochs=self.ga_epochs,
+            patience=self.ga_epochs + 1,
+            verbose=False,
+        )
+
+        rmse = np.sqrt(best_val_loss)
+        penalty = self.complexity_penalty * sum(chrom.feature_mask)
+        return rmse + penalty
 
     def run(self) -> Dict[str, Any]:
         """Execute the full evolutionary optimisation loop.

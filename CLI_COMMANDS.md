@@ -15,6 +15,16 @@ All available commands for the Financial Forecasting Pipeline.
 | `python main.py ga_full` | Full GA optimization using 100% data, 50 epochs per individual, 20 population, 30 generations. **Designed for GPU. Will take hours on CPU.** |
 | `python main.py pipeline` | Run the full pipeline (currently routes to baseline). |
 
+## Multi-Stock Experiments — Universal Model (`main.py`)
+
+Train a single model on **all 20 stocks** simultaneously. Uses per-stock scaling and boundary-safe windowing (windows never cross stock boundaries).
+
+| Command | Description |
+|---|---|
+| `python main.py baseline_multi` | Train a universal BiLSTM on all stocks with fixed hyperparameters (same as single-stock baseline). **~20 min on CPU.** |
+| `python main.py ga_fast_multi` | Quick multi-stock GA test using 20% of per-stock data, 5 epochs, 6 population, 3 generations. **~30 min on CPU.** |
+| `python main.py ga_full_multi` | Full multi-stock GA optimization using 100% data, 50 epochs, 20 population, 30 generations. **Designed for GPU.** |
+
 ---
 
 ## Results Viewer (`result_viewer.py`)
