@@ -5,6 +5,7 @@ Handles model training, early stopping, performance metric calculation,
 and model persistence (saving/loading checkpoints).
 """
 
+from result_logger import ResultLogger
 import logging
 from pathlib import Path
 from typing import Dict, Tuple, Optional

@@ -1,0 +1,325 @@
+# ML & GA Financial Forecaster — Implementation Plan
+
+## Current State
+
+| Module | Status | Notes |
+|---|---|---|
+| [convert_xlsx_to_csv.py](file:///c:/Politechnika/Masters/Thesis%20-%202/convert_xlsx_to_csv.py) | ✅ Done | Refinitiv XLSX -> clean CSV |
+| [data_processor.py](file:///c:/Politechnika/Masters/Thesis%20-%202/data_processor.py) | ✅ Done | Load, fill, targets, split, scale, window |
+| [feature_engineer.py](file:///c:/Politechnika/Masters/Thesis%20-%202/feature_engineer.py) | ✅ Done | 15 indicators via `pandas-ta-classic` |
+| [model_builder.py](file:///c:/Politechnika/Masters/Thesis%20-%202/model_builder.py) | ✅ Done | `BiLSTMModel` + `BiLSTMAttentionModel` + `get_device()` |
+| [trainer.py](file:///c:/Politechnika/Masters/Thesis%20-%202/trainer.py) | ✅ Done | `EarlyStopping`, `Trainer`, save/load checkpoints |
+| [ga_optimizer.py](file:///c:/Politechnika/Masters/Thesis%20-%202/ga_optimizer.py) | ✅ Done | DEAP-based GA, `features_only` + `full` modes |
+| [main.py](file:///c:/Politechnika/Masters/Thesis%20-%202/main.py) | ✅ Done | CLI subcommands: `baseline`, `ga_fast`, `ga_full` |
+| [result_logger.py](file:///c:/Politechnika/Masters/Thesis%20-%202/result_logger.py) | ✅ Done | Timestamped `RESULTS/` folder + JSON/CSV logging |
+| [result_viewer.py](file:///c:/Politechnika/Masters/Thesis%20-%202/result_viewer.py) | ✅ Done | CLI visualization: charts + tables |
+| [smoke_test.py](file:///c:/Politechnika/Masters/Thesis%20-%202/smoke_test.py) | ✅ Done | End-to-end pipeline validation (diagnostic) |
+
+**Data:** 19 US equities (5-min OHLCV CSVs, ~1.4 MB each) in `DATA/`. The 20th ticker will be added later.
+
+---
+
+## Resolved Decisions
+
+| Question | Decision |
+|---|---|
+| VWAP session boundary | **Intraday (daily reset)** — reset cumulative sums at each market open |
+| Smoke test ticker | **JPM** |
+| Leading NaN handling | **Drop** ~20 rows after feature engineering (acceptable) |
+| Ticker count | **19 for now**, 20th to be added later |
+| Data ordering | Verified: `data_processor.py` already sorts ascending (`df.sort_index(ascending=True)`) ✓ |
+| TA library | **`pandas-ta-classic`** (`pip install pandas-ta-classic`, imported as `import pandas_ta as ta`) |
+
+---
+
+## Immediate Deliverables (This Session)
+
+### 1. Feature Engineering — `feature_engineer.py`
+### 2. Baseline Smoke Test — `smoke_test.py`
+
+---
+
+## Proposed Changes
+
+### Phase 1A — Feature Engineering (now)
+
+#### [MODIFY] [feature_engineer.py](file:///c:/Politechnika/Masters/Thesis%20-%202/feature_engineer.py)
+
+Implement every method body. The 12 generated feature columns will be:
+
+| Family | Feature | Column Name(s) | `pandas-ta` Command |
+|---|---|---|---|
+| **Volatility** | High-Low Spread | `HL_Spread` | `df['HL_Spread'] = (df['High'] - df['Low']) / df['Low']` |
+| | Close-Open Spread | `CO_Spread` | `df['CO_Spread'] = (df['Close'] - df['Open']) / df['Open']` |
+| | Bollinger Bands (20) | `BB_High`, `BB_Mid`, `BB_Low` | `df.ta.bbands(length=20, std=2, append=True)` → rename columns |
+| | ATR (14) | `ATR` | `df.ta.atr(length=14, append=True)` → rename to `ATR` |
+| **Trend** | SMA | `SMA_10`, `SMA_20` | `df.ta.sma(length=10, append=True)` + `df.ta.sma(length=20, append=True)` |
+| | EMA | `EMA_10`, `EMA_20` | `df.ta.ema(length=10, append=True)` + `df.ta.ema(length=20, append=True)` |
+| | MACD | `MACD_Line`, `MACD_Histogram` | `df.ta.macd(fast=12, slow=26, signal=9, append=True)` → rename |
+| | RSI (14) | `RSI` | `df.ta.rsi(length=14, append=True)` → rename to `RSI` |
+| **Volume** | VWAP | `VWAP` | Custom: `groupby(date)` → `cumsum(TP * Vol) / cumsum(Vol)` (daily reset) |
+| | OBV | `OBV` | `df.ta.obv(append=True)` → rename to `OBV` |
+
+**Total columns after engineering:** 5 OHLCV base + 17 indicator columns = **22 columns**.
+The GA feature mask will cover all 22.
+
+**Key implementation details:**
+- `import pandas_ta as ta` — all `df.ta.*` calls come from `pandas-ta-classic`.
+- Auto-generated column names (e.g. `BBL_20_2.0`, `ATRr_14`, `RSI_14`) will be **renamed** to our cleaner convention (`BB_Low`, `ATR`, `RSI`) immediately after computation.
+- `add_all_features()` calls every method in order, then **drops** rows with NaN (from rolling window warm-up), and stores `self.feature_names`.
+- VWAP resets daily — group by `df.index.date`, compute `cumsum(TP * Vol) / cumsum(Vol)` within each day.
+
+---
+
+### Phase 1B — Baseline Smoke Test (now)
+
+#### [NEW] [smoke_test.py](file:///c:/Politechnika/Masters/Thesis%20-%202/smoke_test.py)
+
+A standalone script that:
+1. Loads **JPM** from `DATA/JPM.csv`.
+2. Runs `FeatureEngineer.add_all_features()`.
+3. Computes targets via `DataProcessor.compute_targets()`.
+4. Does chronological split + scaling + windowing (using existing `DataProcessor` methods).
+5. Builds a **minimal BiLSTM** (inline, not from `model_builder.py` — to avoid coupling to the still-empty skeleton).
+6. Trains for 5–10 epochs.
+7. Prints MSE / RMSE on the validation set.
+
+**Purpose:** Validate the end-to-end data flow from raw CSV → features → windows → PyTorch tensors → forward pass → loss. We are **not** expecting good predictions — just confirming the pipeline produces valid gradients and the loss decreases.
+
+> [!NOTE]
+> This is a throwaway diagnostic script. Once `model_builder.py` and `trainer.py` are implemented, it can be deleted.
+
+---
+
+## Full Roadmap (Future Sessions)
+
+### Phase 2 — Core Model & Training Loop
+
+#### [MODIFY] [model_builder.py](file:///c:/Politechnika/Masters/Thesis%20-%202/model_builder.py)
+
+- Implement `get_device()` — CUDA → MPS → CPU detection.
+- Implement `BiLSTMModel.__init__` + `forward`:
+  - `nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, bidirectional=True, dropout=dropout)`
+  - `nn.Dropout(dropout)`
+  - `nn.Linear(hidden_size * 2, 1)` — take last time-step hidden state.
+  - Inline shape comments at every layer.
+- Implement `BiLSTMAttentionModel.__init__` + `forward` + `attention`:
+  - Additive attention over all LSTM hidden states.
+  - `nn.Linear(hidden_size * 2, 1)` for attention scoring → softmax → weighted sum → dense → output.
+
+#### [MODIFY] [trainer.py](file:///c:/Politechnika/Masters/Thesis%20-%202/trainer.py)
+
+- `EarlyStopping.__init__` + `__call__` — patience counter, best-loss tracking.
+- `Trainer.__init__` — set up AdamW + MSE/Huber criterion + move model to device.
+- `create_dataloaders` — numpy → `torch.FloatTensor` → `TensorDataset` → `DataLoader`.
+- `_train_one_epoch` — standard forward/backward/step loop with gradient clipping.
+- `_validate` — `torch.no_grad()` evaluation loop.
+- `train` — epoch loop calling `_train_one_epoch` + `_validate` + `EarlyStopping` + logging.
+- `evaluate` — compute MSE, RMSE, MAE, R², Directional Accuracy on test set.
+- `directional_accuracy` — `np.sign(pred) == np.sign(true)` percentage.
+- **Model Persistance (Save/Load)**:
+  - `save_checkpoint(filepath: str, data_processor: DataProcessor, feature_names: list)` — save `model.state_dict()`, `optimizer.state_dict()`, `data_processor.scaler` state, and feature/hyperparameter config to a `.pt` file.
+  - `load_checkpoint(filepath: str, model: nn.Module, optimizer: optim.Optimizer, data_processor: DataProcessor)` — restore model weights, optimizer state (for continued tuning), and scaler state.
+
+> [!TIP]
+> This checkpointing allows training on an external GPU, saving the `.pt` file, and then loading it locally for inference or further fine-tuning. The inclusion of the `scaler` ensures data transformations remain identical.
+
+---
+
+### Phase 3 — Baseline Experiment (Experiment Phase 1)
+
+#### [MODIFY] [main.py](file:///c:/Politechnika/Masters/Thesis%20-%202/main.py)
+
+- Implement `setup_logging()` with format: `%(asctime)s %(levelname)-8s %(name)s — %(message)s`.
+- Implement `run_baseline_experiment()`:
+  - Fixed params: `window=12`, `target=Target_1_Tick`, `hidden=64`, `dropout=0.2`, `lr=1e-3`.
+  - All features enabled.
+  - Train on one or all 19 tickers, record MSE / MAE / RMSE / R² / DA.
+- Log results back into `04_EXPERIMENTS.md` Phase 1 section.
+
+---
+
+### Phase 4 — GA Optimization (`ga_optimizer.py` & `main.py`)
+
+This phase implements the Genetic Algorithm using the `deap` library to answer the core research questions regarding optimal features and hyperparameters. 
+
+#### The Two Modes of Operation
+As per `04_EXPERIMENTS.md`, we need to support two distinct GA runs:
+1. **Feature Optimization Only** (Phase 3 in experiment log): The GA searches *only* for the best subset of technical indicators (the binary mask). Hyperparameters are frozen at baseline values.
+2. **Full Tuning** (Phase 4 in experiment log): The GA optimizes the binary feature mask AND hyperparameters (`window_size`, `look_forward`, `hidden_units`, `dropout`, `learning_rate`).
+
+#### [MODIFY] [ga_optimizer.py](file:///c:/Politechnika/Masters/Thesis%20-%202/ga_optimizer.py)
+
+- **`Chromosome`**: Implements encoding/decoding. 
+  - `[Window Size, Look-forward, Hidden Units, Dropout, LR, Feature1, Feature2, ..., FeatureN]`
+- **`GAOptimizer`**:
+  - `__init__`: Accepts configuration and a `mode` flag (`"features_only"` or `"full"`).
+  - `_setup_deap_toolbox()`: Registers DEAP functions. If `mode == "features_only"`, custom mutation/crossover operators will *only* alter the feature mask slice of the chromosome vector, leaving the hyperparameter slice untouched.
+  - `evaluate_individual()`: The core fitness function. It will:
+    1. Decode the chromosome.
+    2. Extract the active features from the pre-scaled training and validation data.
+    3. Apply the `window_size` to create 3D tensors on the fly.
+    4. Select the correct pre-computed target column based on `look_forward`.
+    5. Train the `BiLSTMModel` for a *reduced* number of epochs (to keep runtime reasonable).
+    6. Return `(RMSE_val + λ * num_features,)` as the fitness score to minimize.
+
+## Resolved Questions from User Feedback
+
+### 1. Performance Bottleneck (Fast Testing vs. Full GPU Run)
+We will implement two distinct execution options in `ga_optimizer.py` and `main.py`:
+- **`run_ga_fast_test()`**: Uses the "shortcuts" (e.g., 20% data subset, 5 epochs per individual) to quickly test that the GA pipeline, DEAP library, and fitness function are working properly without waiting hours.
+- **`run_ga_full_gpu()`**: Uses 100% of the data and trains each individual for the full 50 epochs. This function guarantees your research is rigorous, complete, and "without holes," and is meant to be called when you deploy the script to your external GPU.
+
+### 2. Explanation of Time Horizon Target Generation
+In Phase 2 of your experiments, you want to see how the model performs when predicting 1 tick into the future ($t+1$), vs 2 ticks ($t+2$), vs 3 ticks ($t+3$). 
+
+**How it works:**
+Currently, our `DataProcessor` takes the closing prices and calculates the percentage return for all three horizons simultaneously, creating three separate columns in our table:
+- `Target_1_Tick`: The return 5 minutes from now.
+- `Target_2_Tick`: The return 10 minutes from now.
+- `Target_3_Tick`: The return 15 minutes from now.
+
+When the GA creates a random chromosome (e.g., a "Full Tuning" individual), it might decide: *"I want to test predicting 2 ticks into the future"*. 
+Instead of re-running the entire `DataProcessor` math from scratch to create the $t+2$ target, the fitness function simply looks at the table and says: *"Okay, for this specific neural network, I will use the `Target_2_Tick` column as the true answers (`y`) during training."* This makes the GA significantly faster while remaining 100% mathematically correct.
+
+---
+
+### Results Persistence — `result_logger.py`
+
+Every experiment run (baseline, time horizon sweep, GA optimization) will be saved to a structured `RESULTS/` directory so nothing is lost.
+
+#### [NEW] [result_logger.py](file:///c:/Politechnika/Masters/Thesis%20-%202/result_logger.py)
+
+**Folder naming convention:**
+```
+RESULTS/
+  baseline_jpm_20260521_094100/
+  ga_features_only_20260521_121530/
+  ga_full_tuning_20260521_180200/
+  time_horizon_t2_20260521_193000/
+```
+Pattern: `{experiment_type}_{details}_{YYYYMMDD}_{HHMMSS}`
+
+**Each run folder contains:**
+
+| File | Contents |
+|---|---|
+| `config.json` | All hyperparameters, feature list, window size, dataset path, mode |
+| `metrics.json` | Final test metrics (MSE, RMSE, MAE, R², DA) |
+| `training_log.csv` | Per-epoch train/val loss history |
+| `ga_history.csv` | *(GA runs only)* Per-generation min/avg/max fitness |
+| `best_chromosome.json` | *(GA runs only)* The winning chromosome decoded |
+| `model.pt` | Copy of the checkpoint (or symlink) |
+
+**Key class & methods:**
+- `ResultLogger.__init__(experiment_name: str, sub_label: str)` — creates the timestamped folder under `RESULTS/`.
+- `log_config(config: dict)` — writes `config.json`.
+- `log_metrics(metrics: dict)` — writes `metrics.json`.
+- `log_epoch(epoch: int, train_loss: float, val_loss: float)` — appends a row to `training_log.csv`.
+- `log_ga_generation(gen: int, stats: dict)` — appends a row to `ga_history.csv`.
+- `log_best_chromosome(chromosome: dict)` — writes `best_chromosome.json`.
+- `copy_checkpoint(src_path: str)` — copies the `.pt` file into the run folder.
+- `get_run_dir() -> Path` — returns the absolute path of the current run folder.
+
+**Integration points:**
+- `Trainer.train()` will accept an optional `ResultLogger` and call `log_epoch()` each epoch.
+- `GAOptimizer.run()` will accept an optional `ResultLogger` and call `log_ga_generation()` each generation.
+- `main.py` experiment functions will create a `ResultLogger`, pass it through, and call `log_metrics()` + `copy_checkpoint()` at the end.
+
+---
+
+### Results Viewer — `result_viewer.py`
+
+A standalone script to visualize any run folder in a human-friendly way with graphs and tables.
+
+#### [NEW] [result_viewer.py](file:///c:/Politechnika/Masters/Thesis%20-%202/result_viewer.py)
+
+**Usage:**
+```bash
+python result_viewer.py RESULTS/baseline_jpm_20260521_094100
+```
+
+**What it displays:**
+
+| Panel | Source File | Visualization |
+|---|---|---|
+| **Training Curves** | `training_log.csv` | Line chart: train loss & val loss vs. epoch (dual y-axis if needed) |
+| **Metrics Summary** | `metrics.json` | Formatted table printed to console: MSE, RMSE, MAE, R², DA |
+| **Config Overview** | `config.json` | Formatted table printed to console: all hyperparameters |
+| **GA Fitness Evolution** | `ga_history.csv` | *(GA runs only)* Line chart: min/avg/max fitness vs. generation |
+| **Best Chromosome** | `best_chromosome.json` | *(GA runs only)* Table: selected features (highlighted), hyperparameter values |
+
+**Implementation details:**
+- Uses `matplotlib` for all charts (already a dependency of `pandas`).
+- Charts are both displayed interactively (`plt.show()`) AND saved as `.png` files inside the run folder for easy embedding in the thesis.
+- Console tables are printed using simple formatted strings (no extra dependencies).
+- Detects which files exist in the folder and only renders the relevant panels (e.g., skips GA panels for baseline runs).
+
+---
+
+### Phase 5 — Correction Phase (Missing Experiments)
+
+Identified via cross-reference of `INSTRUCTIONS/` against the plan. These experiments are required to fully answer all 4 core research questions.
+
+#### 5A. Time Horizon Sweep (Experiment Phase 2 in `04_EXPERIMENTS.md`)
+
+> [!IMPORTANT]
+> This is a standalone experiment that must run **before** the GA. It trains the baseline BiLSTM 3 separate times -- once for each prediction horizon (t+1, t+2, t+3) -- keeping all hyperparameters identical. The goal is to measure how prediction error degrades as the horizon extends.
+
+##### [MODIFY] [main.py](file:///c:/Politechnika/Masters/Thesis%20-%202/main.py)
+
+- Add `run_time_horizon_experiment()`:
+  - Fixed HPs: window=12, hidden=64, dropout=0.2, lr=1e-3 (identical to baseline).
+  - Loop over `target_col` in `["Target_1_Tick", "Target_2_Tick", "Target_3_Tick"]`.
+  - For each horizon, train a fresh BiLSTM, evaluate on test set, and log results.
+  - Each horizon gets its own `ResultLogger` folder (e.g., `time_horizon_t1_jpm_...`).
+- Add CLI subcommand: `python main.py time_horizon`.
+- After execution, record results in `04_EXPERIMENTS.md` Phase 2 section.
+
+---
+
+#### 5B. Attention Mechanism Comparison (Research Question #4)
+
+> [!IMPORTANT]
+> Research Question #4: *"Does the Attention mechanism significantly improve results compared to classical LSTM for dense 5-minute data?"*
+> The `BiLSTMAttentionModel` class is implemented but **no experiment uses it yet**.
+
+##### [MODIFY] [main.py](file:///c:/Politechnika/Masters/Thesis%20-%202/main.py)
+
+- Add `run_attention_comparison()`:
+  - Train `BiLSTMModel` and `BiLSTMAttentionModel` side-by-side with identical hyperparameters.
+  - Use the best feature set from the GA Feature Selection (Phase 3) if available, otherwise all features.
+  - Compare RMSE, MAE, R², Directional Accuracy.
+  - Each model gets its own `ResultLogger` folder (e.g., `attention_bilstm_jpm_...`, `attention_bilstm_attn_jpm_...`).
+- Add CLI subcommand: `python main.py attention`.
+- After execution, log which model won and by how much.
+
+---
+
+#### 5C. CLI Commands Reference
+
+##### [NEW] [CLI_COMMANDS.md](file:///c:/Politechnika/Masters/Thesis%20-%202/CLI_COMMANDS.md)
+
+- Create a markdown file in the project root listing every available CLI command (`main.py` subcommands, `result_viewer.py`, `convert_xlsx_to_csv.py`, `smoke_test.py`).
+- Include a short description of what each command does, expected runtime, and example usage.
+
+---
+
+## Verification Plan
+
+### Automated Tests (Phase 1A + 1B)
+1. **Feature shape check:** After `add_all_features()`, assert the DataFrame has exactly 22 columns and no NaN values.
+2. **Scaling leak check:** Verify scaler is fitted only on train partition.
+
+### Automated Tests (Phase 4 - GA)
+1. **Chromosome Decoding:** Verify that a random binary mask translates exactly to the correct subset of feature columns being fed into the BiLSTM.
+2. **DEAP Initialization:** Ensure the `toolbox.evaluate` function successfully returns a valid tuple containing the penalized RMSE.
+3. **Dual Mode Check:** Verify that running `mode="features_only"` successfully freezes hyperparameters (like window size) and only mutates the binary mask.
+
+### Automated Tests (Results Persistence)
+1. **Folder creation:** Verify that calling `ResultLogger("baseline", "jpm")` creates a correctly named subfolder under `RESULTS/`.
+2. **File integrity:** After a baseline run, verify that `config.json`, `metrics.json`, `training_log.csv`, and `model.pt` all exist and contain valid content.
+
+### Manual Verification
+- Review the `best_chromosome` output at the end of the GA run to ensure it dropped features correctly.
+- Inspect the `RESULTS/` folder to confirm run isolation (each run in its own subfolder).

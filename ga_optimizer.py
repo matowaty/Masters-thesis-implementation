@@ -23,6 +23,7 @@ from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 from deap import base, creator, tools
 
 from data_processor import DataProcessor
