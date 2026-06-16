@@ -27,6 +27,19 @@ Train a single model on **all 20 stocks** simultaneously. Uses per-stock scaling
 
 ---
 
+## V2 Classification Experiments (`main.py`)
+
+The V2 Pipeline aligns all stocks chronologically, resamples to 30-min intervals, injects Market-wide features (Index Return, Index Volatility) to provide cross-stock context, and transforms the target into a 3-class problem (UP/DOWN/NEUTRAL) with dynamic volatility thresholding. It trains Model 1 (Classification BiLSTM) and Model 2 (Confidence Meta-Model) sequentially.
+
+| Command | Description |
+|---|---|
+| `python main.py baseline_v2_multi` | Train the V2 Classification pipeline on all stocks. Computes CrossEntropyLoss, trains Model 2 on the Calibration set, and evaluates Trade Rate and Sharpe Ratio on the Test set. |
+| `python main.py attention_v2_multi` | Train both V2 BiLSTM and BiLSTM+Attention on all stocks to compare if the Attention mechanism improves results in the classification setting. |
+| `python main.py ga_fast_v2_multi` | Quick V2 GA test using 20% of data, 5 epochs, 6 population, 3 generations. For verifying the V2 GA pipeline works locally. |
+| `python main.py ga_v2_multi` | Full V2 GA optimization. Tunes feature selection and hyperparameters by maximizing the Sharpe Ratio (simulated using Model 1 + Model 2 trade approvals). |
+
+---
+
 ## Results Viewer (`result_viewer.py`)
 
 | Command | Description |

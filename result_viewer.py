@@ -30,6 +30,10 @@ def print_table(title: str, data: dict) -> None:
     for key, value in data.items():
         if key in ("rmse_bps", "mae_bps"):
             print(f"  {str(key):<{max_key_len + 2}} {value:.2f} bps")
+        elif key in ("trade_rate", "precision_at_conf", "m2_precision_at_0.5"):
+            print(f"  {str(key):<{max_key_len + 2}} {value * 100:.1f}%")
+        elif key in ("annualized_sharpe",):
+            print(f"  {str(key):<{max_key_len + 2}} {value:+.2f}")
         elif isinstance(value, float):
             print(f"  {str(key):<{max_key_len + 2}} {value:.6f}")
         else:
@@ -53,7 +57,7 @@ def plot_training_curves(run_dir: Path) -> None:
     ax.plot(df["epoch"], df["train_loss"], label="Train Loss", color="#4A90D9", linewidth=2)
     ax.plot(df["epoch"], df["val_loss"], label="Val Loss", color="#E74C3C", linewidth=2)
     ax.set_xlabel("Epoch", fontsize=12)
-    ax.set_ylabel("Loss (MSE)", fontsize=12)
+    ax.set_ylabel("Loss", fontsize=12)
     ax.set_title("Training & Validation Loss", fontsize=14, fontweight="bold")
     ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)

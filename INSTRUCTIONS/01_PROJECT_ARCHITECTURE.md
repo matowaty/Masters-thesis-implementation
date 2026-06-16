@@ -67,3 +67,16 @@ The system must be built in strictly decoupled modules. Changes in one module ca
 ### `trainer.py` (Training & Evaluation)
 * Handles the standard training loop, validation tracking, and early stopping.
 * **Metrics Evaluated:** MSE, RMSE, MAE, R² Score, and Directional Accuracy.
+
+---
+
+## 5. V2 Classification Pipeline Architecture (Market-Aware)
+To combat the low signal-to-noise ratio in 5-minute raw regression, a parallel **V2 Pipeline** was introduced with the following key differences:
+
+* **Target Redefinition:** Predicts 3 classes (UP, NEUTRAL, DOWN) instead of a continuous rate of return. NEUTRAL class dominance is handled via inverse frequency class weighting.
+* **Timeframe Aggregation:** 5-minute data is aggregated into 30-minute bars before feature engineering, allowing real market signals to emerge from the microstructure noise.
+* **Market-Aware Context:** The system computes the `Index_Return` and `Index_Volatility` across all stocks for every timestamp and injects these into every individual stock's dataset. This provides the model with cross-stock relationships without causing a dimensionality explosion.
+* **Model 1 & Model 2 Synergy:**
+    * **Model 1 (BiLSTM):** Evaluates market data and predicts the next bar's class using `CrossEntropyLoss`.
+    * **Model 2 (Confidence Meta-Model):** A Gradient Boosting Classifier trained strictly on the Calibration Split. It observes Model 1's behavior and predicts if Model 1 will be correct, acting as a trade filter.
+* **GA Evolution (Sharpe Fitness):** The GA fitness function simulates trading P&L on the Calibration set using only trades approved by Model 2, maximizing the Annualized Sharpe Ratio.

@@ -165,3 +165,66 @@ class BiLSTMAttentionModel(nn.Module):
         out = self.fc(context)
 
         return out
+
+
+class ClassificationBiLSTMModel(nn.Module):
+    """Bidirectional LSTM for 3-class time-series classification."""
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.2,
+    ) -> None:
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(hidden_size * 2, 3)  # 3-class logits
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        lstm_out, _ = self.lstm(x)
+        last_hidden = lstm_out[:, -1, :]
+        last_hidden = self.dropout(last_hidden)
+        out = self.fc(last_hidden)
+        return out
+
+
+class ClassificationBiLSTMAttentionModel(nn.Module):
+    """Bidirectional LSTM with Additive Attention for 3-class classification."""
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int = 64,
+        num_layers: int = 2,
+        dropout: float = 0.2,
+    ) -> None:
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=dropout if num_layers > 1 else 0.0,
+        )
+        self.attention_weights = nn.Linear(hidden_size * 2, 1)
+        self.dropout = nn.Dropout(dropout)
+        self.fc = nn.Linear(hidden_size * 2, 3)  # 3-class logits
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        lstm_out, _ = self.lstm(x)
+        scores = self.attention_weights(lstm_out)
+        alpha = F.softmax(scores, dim=1)
+        context = torch.sum(alpha * lstm_out, dim=1)
+        context = self.dropout(context)
+        out = self.fc(context)
+        return out

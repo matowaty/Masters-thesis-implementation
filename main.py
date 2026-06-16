@@ -17,6 +17,15 @@ from model_builder import BiLSTMModel, BiLSTMAttentionModel, get_device
 from result_logger import ResultLogger
 from trainer import Trainer
 
+# --- V2 Imports ---
+from data_processor_v2 import DataProcessorV2
+from feature_engineer_v2 import FeatureEngineerV2
+from ga_optimizer_v2 import GAOptimizerV2
+from model_builder import ClassificationBiLSTMModel, ClassificationBiLSTMAttentionModel
+from trainer_v2 import TrainerV2
+from confidence_model import train_confidence_model
+from result_viewer_v2 import ResultViewerV2
+
 logger = logging.getLogger(__name__)
 
 
@@ -147,6 +156,7 @@ def run_baseline_experiment() -> None:
     rl.copy_checkpoint(chk_path)
 
     logger.info("Baseline experiment complete. Results saved to %s", rl.get_run_dir())
+    print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
 
 
 def run_ga_optimization(
@@ -266,6 +276,7 @@ def run_ga_optimization(
     rl.copy_checkpoint(chk_path)
 
     logger.info("GA experiment complete. Results saved to %s", rl.get_run_dir())
+    print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
 
 
 def run_ga_fast_test() -> None:
@@ -373,6 +384,7 @@ def run_time_horizon_experiment() -> None:
         trainer.save_checkpoint(chk_path, dp, feature_cols, WINDOW_SIZE)
         rl.log_metrics(metrics)
         rl.copy_checkpoint(chk_path)
+        print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
 
     logger.info("Time horizon sweep complete.")
 
@@ -458,6 +470,7 @@ def run_attention_comparison() -> None:
         trainer.save_checkpoint(chk_path, dp, feature_cols, WINDOW_SIZE)
         rl.log_metrics(metrics)
         rl.copy_checkpoint(chk_path)
+        print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
 
     logger.info("Attention comparison complete. Use result_viewer.py to compare.")
 
@@ -566,6 +579,7 @@ def run_baseline_multi() -> None:
     rl.copy_checkpoint(chk_path)
 
     logger.info("Multi-stock baseline complete. Results saved to %s", rl.get_run_dir())
+    print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
 
 
 def run_ga_optimization_multi(
@@ -675,6 +689,7 @@ def run_ga_optimization_multi(
     rl.copy_checkpoint(chk_path)
 
     logger.info("GA multi-stock experiment complete. Results saved to %s", rl.get_run_dir())
+    print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
 
 
 def run_ga_fast_multi() -> None:
@@ -700,6 +715,196 @@ def run_ga_full_multi() -> None:
 
 
 # ------------------------------------------------------------------
+# V2 Multi-Stock Classification Experiments
+# ------------------------------------------------------------------
+
+def _prepare_v2_multi_data(data_dir: str = "DATA"):
+    dp = DataProcessorV2()
+    fe = FeatureEngineerV2()
+    stock_dfs, feature_cols = dp.load_and_engineer_all(data_dir, fe, threshold_multiplier=0.5)
+    train_dfs, cal_dfs, test_dfs = dp.split_all_stocks(stock_dfs)
+    return dp, train_dfs, cal_dfs, test_dfs, feature_cols
+
+def run_baseline_v2_multi() -> None:
+    logger.info("=" * 60)
+    logger.info("V2 MULTI-STOCK CLASSIFICATION BASELINE")
+    logger.info("=" * 60)
+
+    DATA_DIR = "DATA"
+    WINDOW_SIZE = 12
+    BATCH_SIZE = 64
+    NUM_EPOCHS = 50
+    LEARNING_RATE = 1e-3
+
+    device = get_device()
+    
+    rl = ResultLogger("baseline_v2_multi", "all_stocks")
+    rl.log_config({
+        "data_dir": DATA_DIR,
+        "window_size": WINDOW_SIZE,
+        "batch_size": BATCH_SIZE,
+        "epochs": NUM_EPOCHS,
+        "learning_rate": LEARNING_RATE,
+        "hidden_size": 64,
+        "num_layers": 2,
+        "dropout": 0.2,
+        "scaling": "per-stock",
+        "mode": "v2_multi_classification",
+    })
+
+    dp, train_dfs, cal_dfs, test_dfs, feature_cols = _prepare_v2_multi_data(DATA_DIR)
+    
+    data = dp.scale_and_window_multi(train_dfs, cal_dfs, test_dfs, feature_cols, WINDOW_SIZE)
+    
+    num_features = data["X_train"].shape[2]
+    model = ClassificationBiLSTMModel(input_size=num_features, hidden_size=64, num_layers=2, dropout=0.2)
+    
+    trainer = TrainerV2(model=model, device=device, learning_rate=LEARNING_RATE)
+    train_loader, cal_loader = trainer.create_dataloaders(
+        data["X_train"], data["y_train"], data["ret_train"],
+        data["X_cal"], data["y_cal"], data["ret_cal"],
+        batch_size=BATCH_SIZE
+    )
+    
+    # Needs a test loader for eval
+    import torch
+    from torch.utils.data import TensorDataset, DataLoader
+    test_ds = TensorDataset(torch.FloatTensor(data["X_test"]), torch.LongTensor(data["y_test"]), torch.FloatTensor(data["ret_test"]))
+    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
+
+    logger.info("Training V2 universal classification model...")
+    trainer.train(train_loader, cal_loader, epochs=NUM_EPOCHS, patience=10, verbose=True, result_logger=rl)
+    
+    logger.info("Training Model 2 (Confidence Meta-Model)...")
+    model2 = train_confidence_model(model, cal_loader, device)
+    
+    viewer = ResultViewerV2(device)
+    metrics = viewer.evaluate_pipeline(model, model2, test_loader, conf_threshold=0.70)
+    
+    rl.log_metrics(metrics)
+    
+    chk_path = "checkpoints/baseline_v2_multi.pt"
+    trainer.save_checkpoint(chk_path, dp, feature_cols, WINDOW_SIZE)
+    rl.copy_checkpoint(chk_path)
+    
+    logger.info("V2 baseline complete. Results saved to %s", rl.get_run_dir())
+    print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
+
+def run_attention_v2_multi() -> None:
+    logger.info("=" * 60)
+    logger.info("V2 MULTI-STOCK ATTENTION COMPARISON")
+    logger.info("=" * 60)
+
+    DATA_DIR = "DATA"
+    WINDOW_SIZE = 12
+    BATCH_SIZE = 64
+    NUM_EPOCHS = 50
+    LEARNING_RATE = 1e-3
+
+    device = get_device()
+    dp, train_dfs, cal_dfs, test_dfs, feature_cols = _prepare_v2_multi_data(DATA_DIR)
+    
+    data = dp.scale_and_window_multi(train_dfs, cal_dfs, test_dfs, feature_cols, WINDOW_SIZE)
+    num_features = data["X_train"].shape[2]
+    
+    import torch
+    from torch.utils.data import TensorDataset, DataLoader
+    test_ds = TensorDataset(torch.FloatTensor(data["X_test"]), torch.LongTensor(data["y_test"]), torch.FloatTensor(data["ret_test"]))
+    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
+
+    model_classes = {
+        "bilstm_v2": ClassificationBiLSTMModel,
+        "bilstm_attn_v2": ClassificationBiLSTMAttentionModel,
+    }
+
+    for label, ModelClass in model_classes.items():
+        logger.info("-" * 40)
+        logger.info("Training model: %s", label)
+        logger.info("-" * 40)
+        
+        rl = ResultLogger(f"attention_{label}_multi", "all_stocks")
+        rl.log_config({
+            "data_dir": DATA_DIR,
+            "model": label,
+            "window_size": WINDOW_SIZE,
+            "batch_size": BATCH_SIZE,
+            "epochs": NUM_EPOCHS,
+            "learning_rate": LEARNING_RATE,
+            "hidden_size": 64,
+            "num_layers": 2,
+            "dropout": 0.2,
+            "scaling": "per-stock",
+            "mode": "v2_multi_classification",
+        })
+
+        model = ModelClass(input_size=num_features, hidden_size=64, num_layers=2, dropout=0.2)
+        
+        trainer = TrainerV2(model=model, device=device, learning_rate=LEARNING_RATE)
+        train_loader, cal_loader = trainer.create_dataloaders(
+            data["X_train"], data["y_train"], data["ret_train"],
+            data["X_cal"], data["y_cal"], data["ret_cal"],
+            batch_size=BATCH_SIZE
+        )
+        
+        logger.info("Training V2 classification model: %s", label)
+        trainer.train(train_loader, cal_loader, epochs=NUM_EPOCHS, patience=10, verbose=True, result_logger=rl)
+        
+        logger.info("Training Model 2 (Confidence Meta-Model) for %s...", label)
+        model2 = train_confidence_model(model, cal_loader, device)
+        
+        viewer = ResultViewerV2(device)
+        metrics = viewer.evaluate_pipeline(model, model2, test_loader, conf_threshold=0.70)
+        
+        rl.log_metrics(metrics)
+        
+        chk_path = f"checkpoints/attention_{label}_multi.pt"
+        trainer.save_checkpoint(chk_path, dp, feature_cols, WINDOW_SIZE)
+        rl.copy_checkpoint(chk_path)
+        
+        logger.info("V2 Attention comparison for %s complete. Results saved to %s", label, rl.get_run_dir())
+        print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
+
+def run_ga_v2_multi() -> None:
+    logger.info("=" * 60)
+    logger.info("V2 MULTI-STOCK GA OPTIMIZATION (FULL)")
+    logger.info("=" * 60)
+
+    dp, train_dfs, cal_dfs, test_dfs, feature_cols = _prepare_v2_multi_data("DATA")
+    
+    ga = GAOptimizerV2(
+        feature_names=feature_cols,
+        train_dfs=train_dfs,
+        cal_dfs=cal_dfs,
+        population_size=20,
+        num_generations=30,
+        ga_epochs=50
+    )
+    ga.run()
+
+def run_ga_fast_v2_multi() -> None:
+    logger.info("=" * 60)
+    logger.info("V2 MULTI-STOCK GA OPTIMIZATION (FAST TEST)")
+    logger.info("=" * 60)
+
+    dp, train_dfs, cal_dfs, test_dfs, feature_cols = _prepare_v2_multi_data("DATA")
+    
+    # Use 20% of data for fast test
+    for ticker in train_dfs:
+        train_dfs[ticker] = train_dfs[ticker].iloc[:int(len(train_dfs[ticker]) * 0.2)].copy()
+        cal_dfs[ticker] = cal_dfs[ticker].iloc[:int(len(cal_dfs[ticker]) * 0.2)].copy()
+        
+    ga = GAOptimizerV2(
+        feature_names=feature_cols,
+        train_dfs=train_dfs,
+        cal_dfs=cal_dfs,
+        population_size=6,
+        num_generations=3,
+        ga_epochs=5
+    )
+    ga.run()
+
+
+# ------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------
 
@@ -714,6 +919,8 @@ def main() -> None:
             "pipeline",
             # Multi-stock (universal model) experiments
             "baseline_multi", "ga_fast_multi", "ga_full_multi",
+            # V2 Classification experiments
+            "baseline_v2_multi", "attention_v2_multi", "ga_v2_multi", "ga_fast_v2_multi"
         ],
         help="Which experiment to run.",
     )
@@ -731,6 +938,10 @@ def main() -> None:
         "baseline_multi": run_baseline_multi,
         "ga_fast_multi": run_ga_fast_multi,
         "ga_full_multi": run_ga_full_multi,
+        "baseline_v2_multi": run_baseline_v2_multi,
+        "attention_v2_multi": run_attention_v2_multi,
+        "ga_v2_multi": run_ga_v2_multi,
+        "ga_fast_v2_multi": run_ga_fast_v2_multi,
     }
     commands[args.command]()
 
