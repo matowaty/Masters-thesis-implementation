@@ -96,14 +96,15 @@ class DataProcessorV2:
     ) -> pd.DataFrame:
         """Compute forward returns, dynamic thresholds, and 3-class labels."""
         # 1. Forward return for 1 bar (e.g. next 30-min)
-        df['fwd_return'] = df['Close'].shift(-1) / df['Close'] - 1.0
+        if 'fwd_return' not in df.columns:
+            df['fwd_return'] = df['Close'].shift(-1) / df['Close'] - 1.0
         
         # 2. Dynamic volatility threshold
-        past_returns = df['Close'].pct_change()
-        df['volatility_threshold'] = past_returns.rolling(window).std() * threshold_multiplier
-        
-        # Fill warm-up NaNs in threshold
-        df['volatility_threshold'] = df['volatility_threshold'].bfill()
+        if 'rolling_vol' not in df.columns:
+            past_returns = df['Close'].pct_change()
+            df['rolling_vol'] = past_returns.rolling(window).std().bfill()
+            
+        df['volatility_threshold'] = df['rolling_vol'] * threshold_multiplier
         
         # 3. 3-class Labels: 0=DOWN, 1=NEUTRAL, 2=UP
         df['Target_Class'] = np.where(
@@ -111,8 +112,9 @@ class DataProcessorV2:
             np.where(df['fwd_return'] < -df['volatility_threshold'], 0, 1)
         )
         
-        # Drop the last row which has NaN forward return
-        df = df.dropna(subset=['fwd_return'])
+        # Drop the last row which has NaN forward return if not already dropped
+        if df['fwd_return'].isna().any():
+            df = df.dropna(subset=['fwd_return'])
         return df
 
     def load_and_engineer_all(
@@ -182,15 +184,18 @@ class DataProcessorV2:
         return train_dfs, cal_dfs, test_dfs
 
     def create_windows(
-        self, features: np.ndarray, targets: np.ndarray, fwd_returns: np.ndarray, window_size: int
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        self, features: np.ndarray, targets: np.ndarray, fwd_returns: np.ndarray, 
+        timestamps: np.ndarray, tickers: np.ndarray, window_size: int
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         n_samples = features.shape[0]
-        X, y, ret = [], [], []
+        X, y, ret, times, tks = [], [], [], [], []
         for i in range(window_size, n_samples):
             X.append(features[i - window_size : i])
             y.append(targets[i])
             ret.append(fwd_returns[i])
-        return np.array(X), np.array(y), np.array(ret)
+            times.append(timestamps[i])
+            tks.append(tickers[i])
+        return np.array(X), np.array(y), np.array(ret), np.array(times), np.array(tks)
 
     def scale_and_window_multi(
         self,
@@ -201,27 +206,36 @@ class DataProcessorV2:
         window_size: int = 12,
     ) -> Dict[str, np.ndarray]:
         
-        arrays = {k: [] for k in ["X_train", "y_train", "ret_train", 
-                                  "X_cal", "y_cal", "ret_cal", 
-                                  "X_test", "y_test", "ret_test"]}
+        arrays = {k: [] for k in ["X_train", "y_train", "ret_train", "time_train", "ticker_train",
+                                  "X_cal", "y_cal", "ret_cal", "time_cal", "ticker_cal",
+                                  "X_test", "y_test", "ret_test", "time_test", "ticker_test"]}
 
         for ticker in train_dfs.keys():
             scaler = self._create_scaler()
             scaler.fit(train_dfs[ticker][feature_cols].values)
             self.stock_scalers[ticker] = scaler
 
-            for split_df, x_key, y_key, ret_key in [
-                (train_dfs[ticker], "X_train", "y_train", "ret_train"),
-                (cal_dfs[ticker], "X_cal", "y_cal", "ret_cal"),
-                (test_dfs[ticker], "X_test", "y_test", "ret_test"),
-            ]:
+            splits = [
+                (train_dfs.get(ticker), "X_train", "y_train", "ret_train", "time_train", "ticker_train"),
+                (cal_dfs.get(ticker) if cal_dfs else None, "X_cal", "y_cal", "ret_cal", "time_cal", "ticker_cal"),
+                (test_dfs.get(ticker) if test_dfs else None, "X_test", "y_test", "ret_test", "time_test", "ticker_test"),
+            ]
+            for split_df, x_key, y_key, ret_key, time_key, ticker_key in splits:
+                if split_df is None or split_df.empty:
+                    continue
                 X_scaled = scaler.transform(split_df[feature_cols].values)
                 y_class = split_df["Target_Class"].values
                 ret_fwd = split_df["fwd_return"].values
+                timestamps = split_df.index.values
+                tickers = np.full(len(split_df), ticker)
                 
-                X_w, y_w, ret_w = self.create_windows(X_scaled, y_class, ret_fwd, window_size)
+                X_w, y_w, ret_w, time_w, ticker_w = self.create_windows(
+                    X_scaled, y_class, ret_fwd, timestamps, tickers, window_size
+                )
                 arrays[x_key].append(X_w)
                 arrays[y_key].append(y_w)
                 arrays[ret_key].append(ret_w)
+                arrays[time_key].append(time_w)
+                arrays[ticker_key].append(ticker_w)
 
-        return {k: np.concatenate(v) for k, v in arrays.items()}
+        return {k: np.concatenate(v) if v else np.array([]) for k, v in arrays.items()}

@@ -9,6 +9,7 @@ Model Training -> GA Optimization -> Final Evaluation.
 import argparse
 import logging
 import sys
+import numpy as np
 
 from data_processor import DataProcessor
 from feature_engineer import FeatureEngineer
@@ -24,7 +25,7 @@ from ga_optimizer_v2 import GAOptimizerV2
 from model_builder import ClassificationBiLSTMModel, ClassificationBiLSTMAttentionModel
 from trainer_v2 import TrainerV2
 from confidence_model import train_confidence_model
-from result_viewer_v2 import ResultViewerV2
+from pipeline_evaluator_v2 import PipelineEvaluatorV2
 
 logger = logging.getLogger(__name__)
 
@@ -778,10 +779,17 @@ def run_baseline_v2_multi() -> None:
     logger.info("Training Model 2 (Confidence Meta-Model)...")
     model2 = train_confidence_model(model, cal_loader, device)
     
-    viewer = ResultViewerV2(device)
-    metrics = viewer.evaluate_pipeline(model, model2, test_loader, conf_threshold=0.70)
+    evaluator = PipelineEvaluatorV2(device)
+    results = evaluator.evaluate_pipeline(
+        model, model2, test_loader, 
+        data.get("time_test", np.array([])), data.get("ticker_test", np.array([])),
+        conf_threshold=0.70
+    )
     
-    rl.log_metrics(metrics)
+    rl.log_metrics(results["metrics"])
+    rl.log_test_trades(results["trade_log"])
+    rl.log_json_data("confusion_matrix.json", results["confusion_matrix"])
+    rl.log_json_data("pnl_stats.json", results["pnl_stats"])
     
     chk_path = "checkpoints/baseline_v2_multi.pt"
     trainer.save_checkpoint(chk_path, dp, feature_cols, WINDOW_SIZE)
@@ -852,10 +860,17 @@ def run_attention_v2_multi() -> None:
         logger.info("Training Model 2 (Confidence Meta-Model) for %s...", label)
         model2 = train_confidence_model(model, cal_loader, device)
         
-        viewer = ResultViewerV2(device)
-        metrics = viewer.evaluate_pipeline(model, model2, test_loader, conf_threshold=0.70)
+        evaluator = PipelineEvaluatorV2(device)
+        results = evaluator.evaluate_pipeline(
+            model, model2, test_loader, 
+            data.get("time_test", np.array([])), data.get("ticker_test", np.array([])),
+            conf_threshold=0.70
+        )
         
-        rl.log_metrics(metrics)
+        rl.log_metrics(results["metrics"])
+        rl.log_test_trades(results["trade_log"])
+        rl.log_json_data("confusion_matrix.json", results["confusion_matrix"])
+        rl.log_json_data("pnl_stats.json", results["pnl_stats"])
         
         chk_path = f"checkpoints/attention_{label}_multi.pt"
         trainer.save_checkpoint(chk_path, dp, feature_cols, WINDOW_SIZE)
@@ -864,44 +879,139 @@ def run_attention_v2_multi() -> None:
         logger.info("V2 Attention comparison for %s complete. Results saved to %s", label, rl.get_run_dir())
         print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
 
-def run_ga_v2_multi() -> None:
+def run_ga_optimization_v2_multi(
+    mode: str = "full",
+    ga_epochs: int = 50,
+    data_fraction: float = 1.0,
+    population_size: int = 20,
+    num_generations: int = 30,
+) -> None:
+    label = f"ga_{mode}_v2_multi"
     logger.info("=" * 60)
-    logger.info("V2 MULTI-STOCK GA OPTIMIZATION (FULL)")
+    logger.info("V2 MULTI-STOCK GA OPTIMIZATION -- mode=%s", mode)
     logger.info("=" * 60)
 
-    dp, train_dfs, cal_dfs, test_dfs, feature_cols = _prepare_v2_multi_data("DATA")
-    
+    rl = ResultLogger(label, "all_stocks")
+    rl.log_config({
+        "mode": mode,
+        "ga_epochs": ga_epochs,
+        "data_fraction": data_fraction,
+        "population_size": population_size,
+        "num_generations": num_generations,
+        "data_dir": "DATA",
+        "scaling": "per-stock",
+    })
+
+    dp, full_train_dfs, full_cal_dfs, full_test_dfs, feature_cols = _prepare_v2_multi_data("DATA")
+
+    train_dfs, cal_dfs = {}, {}
+    for ticker in full_train_dfs:
+        train_dfs[ticker] = full_train_dfs[ticker].iloc[:int(len(full_train_dfs[ticker]) * data_fraction)].copy()
+        cal_dfs[ticker] = full_cal_dfs[ticker].iloc[:int(len(full_cal_dfs[ticker]) * data_fraction)].copy()
+
     ga = GAOptimizerV2(
         feature_names=feature_cols,
         train_dfs=train_dfs,
         cal_dfs=cal_dfs,
+        population_size=population_size,
+        num_generations=num_generations,
+        ga_epochs=ga_epochs,
+        result_logger=rl,
+    )
+    result = ga.run(checkpoint_path=f"checkpoints/{label}_checkpoint.pkl")
+
+    best = result["best_chromosome"]
+    logger.info("=" * 60)
+    logger.info("RETRAINING BEST CHROMOSOME ON FULL MULTI-STOCK DATA (V2)")
+    logger.info("=" * 60)
+
+    active_features = best.get("selected_features", feature_cols)
+    window_size = best.get("window_size", 12)
+    hidden_units = best.get("hidden_units", 64)
+    dropout = best.get("dropout", 0.2)
+    learning_rate = best.get("learning_rate", 1e-3)
+    threshold_multiplier = best.get("threshold_multiplier", 0.5)
+    confidence_threshold = best.get("confidence_threshold", 0.70)
+
+    device = get_device()
+
+    dp_full = DataProcessorV2()
+    # Need to re-compute targets with GA's threshold multiplier on FULL datasets
+    mod_train_dfs, mod_cal_dfs, mod_test_dfs = {}, {}, {}
+    for ticker in full_train_dfs:
+        mod_train_dfs[ticker] = dp_full.compute_targets_and_labels(full_train_dfs[ticker].copy(), threshold_multiplier)
+        mod_cal_dfs[ticker] = dp_full.compute_targets_and_labels(full_cal_dfs[ticker].copy(), threshold_multiplier)
+        mod_test_dfs[ticker] = dp_full.compute_targets_and_labels(full_test_dfs[ticker].copy(), threshold_multiplier)
+
+    data = dp_full.scale_and_window_multi(
+        mod_train_dfs, mod_cal_dfs, mod_test_dfs,
+        active_features, window_size,
+    )
+
+    model = ClassificationBiLSTMModel(
+        input_size=len(active_features),
+        hidden_size=hidden_units,
+        num_layers=2,
+        dropout=dropout,
+    )
+
+    trainer = TrainerV2(model=model, device=device, learning_rate=learning_rate)
+
+    train_loader, cal_loader = trainer.create_dataloaders(
+        data["X_train"], data["y_train"], data["ret_train"],
+        data["X_cal"], data["y_cal"], data["ret_cal"],
+        batch_size=64,
+    )
+
+    import torch
+    from torch.utils.data import TensorDataset, DataLoader
+    test_ds = TensorDataset(torch.FloatTensor(data["X_test"]), torch.LongTensor(data["y_test"]), torch.FloatTensor(data["ret_test"]))
+    test_loader = DataLoader(test_ds, batch_size=64, shuffle=False)
+
+    logger.info("Training V2 classification model...")
+    trainer.train(train_loader, cal_loader, epochs=50, patience=10, verbose=True, result_logger=rl)
+
+    logger.info("Training Model 2 (Confidence Meta-Model)...")
+    model2 = train_confidence_model(model, cal_loader, device)
+
+    evaluator = PipelineEvaluatorV2(device)
+    results = evaluator.evaluate_pipeline(
+        model, model2, test_loader, 
+        data.get("time_test", np.array([])), data.get("ticker_test", np.array([])),
+        conf_threshold=confidence_threshold
+    )
+
+    rl.log_metrics(results["metrics"])
+    rl.log_test_trades(results["trade_log"])
+    rl.log_json_data("confusion_matrix.json", results["confusion_matrix"])
+    rl.log_json_data("pnl_stats.json", results["pnl_stats"])
+
+    chk_path = f"checkpoints/{label}_best_all.pt"
+    trainer.save_checkpoint(chk_path, dp_full, active_features, window_size)
+    rl.copy_checkpoint(chk_path)
+
+    logger.info("GA multi-stock V2 experiment complete. Results saved to %s", rl.get_run_dir())
+    print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
+
+
+def run_ga_v2_multi() -> None:
+    run_ga_optimization_v2_multi(
+        mode="full",
+        ga_epochs=50,
+        data_fraction=1.0,
         population_size=20,
         num_generations=30,
-        ga_epochs=50
     )
-    ga.run()
+
 
 def run_ga_fast_v2_multi() -> None:
-    logger.info("=" * 60)
-    logger.info("V2 MULTI-STOCK GA OPTIMIZATION (FAST TEST)")
-    logger.info("=" * 60)
-
-    dp, train_dfs, cal_dfs, test_dfs, feature_cols = _prepare_v2_multi_data("DATA")
-    
-    # Use 20% of data for fast test
-    for ticker in train_dfs:
-        train_dfs[ticker] = train_dfs[ticker].iloc[:int(len(train_dfs[ticker]) * 0.2)].copy()
-        cal_dfs[ticker] = cal_dfs[ticker].iloc[:int(len(cal_dfs[ticker]) * 0.2)].copy()
-        
-    ga = GAOptimizerV2(
-        feature_names=feature_cols,
-        train_dfs=train_dfs,
-        cal_dfs=cal_dfs,
+    run_ga_optimization_v2_multi(
+        mode="fast",
+        ga_epochs=5,
+        data_fraction=0.2,
         population_size=6,
         num_generations=3,
-        ga_epochs=5
     )
-    ga.run()
 
 
 # ------------------------------------------------------------------

@@ -13,6 +13,7 @@ Fitness Function:
 import logging
 import pickle
 import random
+import gc
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -105,6 +106,7 @@ class GAOptimizerV2:
         crossover_prob: float = 0.7,
         mutation_prob: float = 0.2,
         ga_epochs: int = 5,
+        result_logger: Optional["ResultLogger"] = None,
     ) -> None:
         self.feature_names = list(feature_names)
         self.num_features = len(feature_names)
@@ -116,6 +118,7 @@ class GAOptimizerV2:
         self.crossover_prob = crossover_prob
         self.mutation_prob = mutation_prob
         self.ga_epochs = ga_epochs
+        self.result_logger = result_logger
         self.device = get_device()
         self.dp = DataProcessorV2()
         
@@ -164,6 +167,28 @@ class GAOptimizerV2:
             return (ind,)
             
         self.toolbox.register("mutate", _mutate)
+
+    def log_generation(self, gen: int, record: dict, best_dict: dict) -> None:
+        """Log generation stats and best parameters if a ResultLogger is attached."""
+        if not self.result_logger:
+            return
+        
+        run_dir = Path(self.result_logger.get_run_dir())
+        
+        # 1. Log fitness stats
+        history_path = run_dir / "ga_history.csv"
+        file_exists = history_path.exists()
+        with open(history_path, "a", encoding="utf-8") as f:
+            if not file_exists:
+                f.write("generation,min_fitness,avg_fitness,max_fitness,std_fitness\n")
+            f.write(f"{gen},{record['min']},{record['avg']},{record['max']},{record['std']}\n")
+            
+        # 2. Log best parameters
+        params_path = run_dir / "ga_best_params_history.jsonl"
+        with open(params_path, "a", encoding="utf-8") as f:
+            import json
+            log_obj = {"generation": gen, **best_dict}
+            f.write(json.dumps(log_obj) + "\n")
 
     def compute_sharpe_fitness(self, model1, model2, cal_loader, conf_threshold) -> float:
         """Simulate P&L using Model 1 and Model 2 on calibration set."""
@@ -215,7 +240,7 @@ class GAOptimizerV2:
 
         # Scale & Window
         arrays = self.dp.scale_and_window_multi(
-            mod_train_dfs, mod_cal_dfs, mod_cal_dfs, active_features, chrom.window_size
+            mod_train_dfs, mod_cal_dfs, {}, active_features, chrom.window_size
         )
         
         model = ClassificationBiLSTMModel(len(active_features), chrom.hidden_units, 2, chrom.dropout)
@@ -226,8 +251,15 @@ class GAOptimizerV2:
             arrays["X_cal"], arrays["y_cal"], arrays["ret_cal"]
         )
         
+        self._current_ind += 1
+        logger.info(
+            "Evaluating Gen %d/%d | Ind %d/%d...",
+            self._current_gen, self.num_generations,
+            self._current_ind, self._total_inds
+        )
+        
         # Train Model 1
-        trainer.train(train_loader, cal_loader, epochs=self.ga_epochs, verbose=False)
+        best_train_loss, best_val_loss = trainer.train(train_loader, cal_loader, epochs=self.ga_epochs, verbose=False)
         
         # Train Model 2
         model2 = train_confidence_model(model, cal_loader, self.device)
@@ -235,23 +267,72 @@ class GAOptimizerV2:
         # Compute Sharpe
         sharpe = self.compute_sharpe_fitness(model, model2, cal_loader, chrom.confidence_threshold)
         
+        logger.info(
+            "  -> M1 TrainLoss: %.4f | M1 ValLoss: %.4f | M2 Sharpe: %.4f",
+            best_train_loss, best_val_loss, sharpe
+        )
+        
+        penalty = self.complexity_penalty * len(active_features)
+        
+        individual_stats = chrom.to_dict(self.feature_names)
+        individual_stats.update({
+            "generation": self._current_gen,
+            "individual_id": self._current_ind,
+            "m1_train_loss": float(best_train_loss),
+            "m1_val_loss": float(best_val_loss),
+            "m2_sharpe": float(sharpe),
+            "penalty": float(penalty),
+            "fitness": float(sharpe - penalty)
+        })
+        if self.result_logger:
+            self.result_logger.log_population_individual(individual_stats)
+        
+        # Cleanup memory
+        del model, model2, trainer, train_loader, cal_loader, arrays
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+        
         # Complexity Penalty
         penalty = self.complexity_penalty * len(active_features)
         return (sharpe - penalty,)
 
-    def run(self) -> Dict[str, Any]:
-        pop = self.toolbox.population(n=self.population_size)
-        hof = tools.HallOfFame(1)
+    def run(self, checkpoint_path: Optional[str] = None) -> Dict[str, Any]:
+        stats = tools.Statistics(lambda ind: ind.fitness.values[0])
+        stats.register("min", np.min)
+        stats.register("avg", np.mean)
+        stats.register("max", np.max)
+        stats.register("std", np.std)
 
-        logger.info("=" * 60)
-        logger.info("GA V2 Started -- Pop: %d, Gens: %d", self.population_size, self.num_generations)
+        start_gen, pop, hof = self._maybe_load_checkpoint(checkpoint_path)
 
-        fitnesses = list(map(self.toolbox.evaluate, pop))
-        for ind, fit in zip(pop, fitnesses):
-            ind.fitness.values = fit
-        hof.update(pop)
+        if start_gen == 0:
+            pop = self.toolbox.population(n=self.population_size)
+            hof = tools.HallOfFame(1)
 
-        for gen in range(1, self.num_generations + 1):
+            logger.info("=" * 60)
+            logger.info("GA V2 Started -- Pop: %d, Gens: %d", self.population_size, self.num_generations)
+
+            self._current_gen = 0
+            self._current_ind = 0
+            self._total_inds = len(pop)
+            fitnesses = list(map(self.toolbox.evaluate, pop))
+            for ind, fit in zip(pop, fitnesses):
+                ind.fitness.values = fit
+            hof.update(pop)
+            
+            record = stats.compile(pop)
+            
+            # Get best individual for parameter logging
+            best_ind = tools.selBest(pop, 1)[0]
+            best_chrom = ChromosomeV2.from_vector(best_ind, self.num_features)
+            best_dict = best_chrom.to_dict(self.feature_names)
+            
+            self.log_generation(0, record, best_dict)
+            self._save_checkpoint(checkpoint_path, 0, pop, hof)
+            start_gen = 1
+
+        for gen in range(start_gen, self.num_generations + 1):
             offspring = self.toolbox.select(pop, len(pop))
             offspring = list(map(self.toolbox.clone, offspring))
 
@@ -267,12 +348,26 @@ class GAOptimizerV2:
                     del mutant.fitness.values
 
             invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+            
+            self._current_gen = gen
+            self._current_ind = 0
+            self._total_inds = len(invalid_ind)
             fitnesses = list(map(self.toolbox.evaluate, invalid_ind))
             for ind, fit in zip(invalid_ind, fitnesses):
                 ind.fitness.values = fit
 
             pop[:] = offspring
             hof.update(pop)
+            
+            record = stats.compile(pop)
+            
+            # Get best individual for parameter logging
+            best_ind_gen = tools.selBest(pop, 1)[0]
+            best_chrom_gen = ChromosomeV2.from_vector(best_ind_gen, self.num_features)
+            best_dict_gen = best_chrom_gen.to_dict(self.feature_names)
+            
+            self.log_generation(gen, record, best_dict_gen)
+            self._save_checkpoint(checkpoint_path, gen, pop, hof)
             
             best_so_far = hof[0].fitness.values[0]
             logger.info("Gen %d complete. Best Sharpe so far: %.4f", gen, best_so_far)
@@ -284,4 +379,85 @@ class GAOptimizerV2:
         logger.info("GA V2 Complete! Best Sharpe: %.4f", best_ind.fitness.values[0])
         logger.info("Best config: %s", best_dict)
         
+        if self.result_logger:
+            self.result_logger.log_best_chromosome(best_dict)
+        
         return {"best_chromosome": best_dict, "best_fitness": best_ind.fitness.values[0]}
+
+    # ------------------------------------------------------------------
+    # Checkpointing
+    # ------------------------------------------------------------------
+
+    def _save_checkpoint(
+        self,
+        path: Optional[str],
+        generation: int,
+        pop: list,
+        hof: tools.HallOfFame,
+    ) -> None:
+        if path is None:
+            return
+
+        ckpt = {
+            "generation": generation,
+            "population": [list(ind) for ind in pop],
+            "fitnesses": [ind.fitness.values for ind in pop],
+            "hof": [list(ind) for ind in hof],
+            "hof_fitnesses": [ind.fitness.values for ind in hof],
+            "random_state": random.getstate(),
+            "numpy_random_state": np.random.get_state(),
+            "torch_random_state": torch.get_rng_state(),
+            "torch_cuda_random_state": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            "run_dir": str(self.result_logger.get_run_dir()) if self.result_logger else None,
+        }
+
+        filepath = Path(path)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        with open(filepath, "wb") as f:
+            pickle.dump(ckpt, f)
+
+        logger.info("[CHECKPOINT] Saved V2 GA state after gen %d to %s", generation, filepath)
+
+    def _maybe_load_checkpoint(
+        self,
+        path: Optional[str],
+    ) -> Tuple[int, Optional[list], Optional[tools.HallOfFame]]:
+        if path is None or not Path(path).exists():
+            return 0, None, None
+
+        with open(path, "rb") as f:
+            ckpt = pickle.load(f)
+
+        random.setstate(ckpt["random_state"])
+        np.random.set_state(ckpt["numpy_random_state"])
+        
+        if "torch_random_state" in ckpt:
+            torch.set_rng_state(ckpt["torch_random_state"])
+        if ckpt.get("torch_cuda_random_state") and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(ckpt["torch_cuda_random_state"])
+            
+        run_dir = ckpt.get("run_dir")
+        if run_dir and Path(run_dir).exists() and self.result_logger:
+            old_dir = self.result_logger.run_dir
+            if old_dir != Path(run_dir):
+                self.result_logger.run_dir = Path(run_dir)
+                self.result_logger._ga_history_path = self.result_logger.run_dir / "ga_history.csv"
+                self.result_logger._training_log_path = self.result_logger.run_dir / "training_log.csv"
+                if old_dir.exists() and not any(old_dir.iterdir()):
+                    old_dir.rmdir()
+
+        pop = []
+        for genes, fit in zip(ckpt["population"], ckpt["fitnesses"]):
+            ind = creator.IndividualV2(genes)
+            ind.fitness.values = fit
+            pop.append(ind)
+
+        hof = tools.HallOfFame(1)
+        for genes, fit in zip(ckpt["hof"], ckpt["hof_fitnesses"]):
+            ind = creator.IndividualV2(genes)
+            ind.fitness.values = fit
+            hof.update([ind])
+
+        last_gen = ckpt["generation"]
+        logger.info("[CHECKPOINT] Resumed V2 GA from gen %d / %d (file: %s)", last_gen, self.num_generations, path)
+        return last_gen + 1, pop, hof

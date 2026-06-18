@@ -12,7 +12,7 @@ from typing import Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import precision_score
 from torch.utils.data import DataLoader
 
@@ -47,13 +47,18 @@ def extract_m2_features(model1: nn.Module, loader: DataLoader, device: torch.dev
 
 def train_confidence_model(
     model1: nn.Module, cal_loader: DataLoader, device: torch.device
-) -> GradientBoostingClassifier:
+) -> HistGradientBoostingClassifier:
     """Train the Model 2 confidence estimator on the calibration set."""
     logger.info("Extracting Calibration features for Model 2...")
     m2_cal_features, m2_cal_labels = extract_m2_features(model1, cal_loader, device)
 
-    logger.info("Training Model 2 (Gradient Boosting Classifier)...")
-    model2 = GradientBoostingClassifier(n_estimators=200, max_depth=4, random_state=42)
+    logger.info("Training Model 2 (HistGradient Boosting Classifier)...")
+    model2 = HistGradientBoostingClassifier(
+        max_iter=200, 
+        max_depth=4, 
+        random_state=42,
+        learning_rate=0.1
+    )
     model2.fit(m2_cal_features, m2_cal_labels)
     
     # Quick sanity check on calibration data
@@ -65,7 +70,7 @@ def train_confidence_model(
 
 
 def evaluate_confidence_model(
-    model2: GradientBoostingClassifier, m2_features: np.ndarray, m2_labels: np.ndarray, threshold: float = 0.70
+    model2: HistGradientBoostingClassifier, m2_features: np.ndarray, m2_labels: np.ndarray, threshold: float = 0.70
 ) -> Tuple[float, float]:
     """Evaluate Model 2 precision at a specific confidence threshold."""
     confidence_scores = model2.predict_proba(m2_features)[:, 1]

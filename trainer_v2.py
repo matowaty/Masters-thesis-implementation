@@ -143,8 +143,9 @@ class TrainerV2:
         patience: int = 10,
         verbose: bool = True,
         result_logger: Optional["ResultLogger"] = None,
-    ) -> float:
+    ) -> Tuple[float, float]:
         early_stopping = EarlyStoppingV2(patience=patience)
+        best_train_loss = float("inf")
         if verbose: logger.info("Starting V2 training on %s for up to %d epochs", self.device, epochs)
 
         epoch_times = []
@@ -167,11 +168,15 @@ class TrainerV2:
             if result_logger is not None:
                 result_logger.log_epoch(epoch, train_loss, val_loss)
 
+            is_best = val_loss < early_stopping.best_loss
             early_stopping(val_loss)
+            if is_best:
+                best_train_loss = train_loss
+                
             if early_stopping.early_stop:
                 break
                 
-        return early_stopping.best_loss
+        return best_train_loss, early_stopping.best_loss
 
     def save_checkpoint(
         self, filepath: str, data_processor: DataProcessorV2, feature_names: list, window_size: int

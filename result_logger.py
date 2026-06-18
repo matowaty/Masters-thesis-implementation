@@ -138,3 +138,22 @@ class ResultLogger:
         dest = self.run_dir / "model.pt"
         shutil.copy2(src, dest)
         logger.info("Checkpoint copied to %s", dest)
+
+    def log_population_individual(self, individual_stats: Dict[str, Any]) -> None:
+        """Append one individual's stats to ga_population_history.jsonl."""
+        path = self.run_dir / "ga_population_history.jsonl"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(individual_stats, default=str) + "\n")
+
+    def log_test_trades(self, df: Any) -> None: # Using Any to avoid pd import if not needed, but typical is pd.DataFrame
+        """Save the detailed test trade log dataframe to CSV."""
+        path = self.run_dir / "test_trade_log.csv"
+        df.to_csv(path, index=False)
+        logger.info("Test trade log saved to %s", path)
+
+    def log_json_data(self, filename: str, data: Any) -> None:
+        """Save a generic dictionary or list to a JSON file."""
+        path = self.run_dir / filename
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+        logger.info("%s saved to %s", filename, path)
