@@ -38,7 +38,8 @@ class PipelineEvaluatorV2:
         test_loader: DataLoader, 
         test_times: np.ndarray,
         test_tickers: np.ndarray,
-        conf_threshold: float
+        conf_threshold: float,
+        bars_per_day: int = 13
     ) -> dict:
         """Run the full evaluation of Model 1 + Model 2 on the Test set."""
         logger.info("=" * 60)
@@ -92,7 +93,7 @@ class PipelineEvaluatorV2:
             
             approved_pnl = pnl[approved_mask]
             if approved_pnl.std() > 1e-9:
-                sharpe = approved_pnl.mean() / approved_pnl.std() * np.sqrt(252 * 13) # Ann. for 30min bars (13/day)
+                sharpe = approved_pnl.mean() / approved_pnl.std() * np.sqrt(252 * bars_per_day) # Ann. bars
                 logger.info("Simulated Annualized Sharpe Ratio: %.2f", sharpe)
                 metrics["annualized_sharpe"] = float(sharpe)
             else:

@@ -122,6 +122,7 @@ class DataProcessorV2:
         data_dir: str,
         feature_engineer: "FeatureEngineerV2",
         threshold_multiplier: float = 0.5,
+        resample_period: str = "30min",
     ) -> Tuple[Dict[str, pd.DataFrame], List[str]]:
         
         data_dir = Path(data_dir)
@@ -134,8 +135,8 @@ class DataProcessorV2:
             ticker = fpath.stem
             df = self.load_data(str(fpath))
             df = self.handle_missing_intervals(df)
-            df_30 = self.resample_ohlcv(df, '30min')
-            raw_resampled[ticker] = df_30
+            df_resampled = self.resample_ohlcv(df, resample_period)
+            raw_resampled[ticker] = df_resampled
             
         # 2. Compute Market Context globally
         market_df = self.compute_market_context(raw_resampled)

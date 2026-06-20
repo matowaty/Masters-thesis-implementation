@@ -35,8 +35,10 @@ The V2 Pipeline aligns all stocks chronologically, resamples to 30-min intervals
 |---|---|
 | `python main.py baseline_v2_multi` | Train the V2 Classification pipeline on all stocks. Computes CrossEntropyLoss, trains Model 2 on the Calibration set, and evaluates Trade Rate and Sharpe Ratio on the Test set. |
 | `python main.py attention_v2_multi` | Train both V2 BiLSTM and BiLSTM+Attention on all stocks to compare if the Attention mechanism improves results in the classification setting. |
-| `python main.py ga_fast_v2_multi` | Quick V2 GA test using 20% of data, 5 epochs, 6 population, 3 generations. For verifying the V2 GA pipeline works locally. |
-| `python main.py ga_v2_multi` | Full V2 GA optimization. Tunes feature selection and hyperparameters by maximizing the Sharpe Ratio (simulated using Model 1 + Model 2 trade approvals). |
+| `python main.py ga_v2_multi_30min` | Full V2 GA optimization using 30-minute windows. Tunes feature selection and hyperparameters by maximizing the Sharpe Ratio. |
+| `python main.py ga_v2_multi_15min` | Full V2 GA optimization using 15-minute windows. Tunes feature selection and hyperparameters by maximizing the Sharpe Ratio. |
+| `python main.py ga_fast_v2_multi_30min` | Quick V2 GA test using 30-minute windows. 20% of data, 5 epochs, 6 population, 3 generations. |
+| `python main.py ga_fast_v2_multi_15min` | Quick V2 GA test using 15-minute windows. 20% of data, 5 epochs, 6 population, 3 generations. |
 
 ---
 

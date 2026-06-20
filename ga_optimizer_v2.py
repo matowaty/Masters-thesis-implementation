@@ -100,13 +100,14 @@ class GAOptimizerV2:
         feature_names: List[str],
         train_dfs: Dict[str, "pd.DataFrame"],
         cal_dfs: Dict[str, "pd.DataFrame"],
-        population_size: int = 20,
-        num_generations: int = 15,
+        population_size: int = 50,
+        num_generations: int = 10,
         complexity_penalty: float = 0.05,
         crossover_prob: float = 0.7,
         mutation_prob: float = 0.2,
         ga_epochs: int = 5,
         result_logger: Optional["ResultLogger"] = None,
+        bars_per_day: int = 13,
     ) -> None:
         self.feature_names = list(feature_names)
         self.num_features = len(feature_names)
@@ -119,6 +120,7 @@ class GAOptimizerV2:
         self.mutation_prob = mutation_prob
         self.ga_epochs = ga_epochs
         self.result_logger = result_logger
+        self.bars_per_day = bars_per_day
         self.device = get_device()
         self.dp = DataProcessorV2()
         
@@ -222,7 +224,7 @@ class GAOptimizerV2:
         if pnl.std() < 1e-9:
             return -999.0
             
-        sharpe = pnl.mean() / pnl.std() * np.sqrt(252 * 13) # Ann. 30min bars
+        sharpe = pnl.mean() / pnl.std() * np.sqrt(252 * self.bars_per_day) # Ann. bars
         return sharpe
 
     def evaluate_individual(self, individual: list) -> Tuple[float]:

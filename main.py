@@ -719,10 +719,10 @@ def run_ga_full_multi() -> None:
 # V2 Multi-Stock Classification Experiments
 # ------------------------------------------------------------------
 
-def _prepare_v2_multi_data(data_dir: str = "DATA"):
+def _prepare_v2_multi_data(data_dir: str = "DATA", resample_period: str = "30min"):
     dp = DataProcessorV2()
     fe = FeatureEngineerV2()
-    stock_dfs, feature_cols = dp.load_and_engineer_all(data_dir, fe, threshold_multiplier=0.5)
+    stock_dfs, feature_cols = dp.load_and_engineer_all(data_dir, fe, threshold_multiplier=0.5, resample_period=resample_period)
     train_dfs, cal_dfs, test_dfs = dp.split_all_stocks(stock_dfs)
     return dp, train_dfs, cal_dfs, test_dfs, feature_cols
 
@@ -885,11 +885,15 @@ def run_ga_optimization_v2_multi(
     data_fraction: float = 1.0,
     population_size: int = 20,
     num_generations: int = 30,
+    resample_period: str = "30min",
 ) -> None:
-    label = f"ga_{mode}_v2_multi"
+    label = f"ga_{mode}_v2_multi_{resample_period}"
     logger.info("=" * 60)
-    logger.info("V2 MULTI-STOCK GA OPTIMIZATION -- mode=%s", mode)
+    logger.info("V2 MULTI-STOCK GA OPTIMIZATION -- mode=%s | period=%s", mode, resample_period)
     logger.info("=" * 60)
+    
+    minutes = int(resample_period.replace("min", ""))
+    bars_per_day = int(6.5 * 60 / minutes)
 
     rl = ResultLogger(label, "all_stocks")
     rl.log_config({
@@ -900,9 +904,10 @@ def run_ga_optimization_v2_multi(
         "num_generations": num_generations,
         "data_dir": "DATA",
         "scaling": "per-stock",
+        "resample_period": resample_period,
     })
 
-    dp, full_train_dfs, full_cal_dfs, full_test_dfs, feature_cols = _prepare_v2_multi_data("DATA")
+    dp, full_train_dfs, full_cal_dfs, full_test_dfs, feature_cols = _prepare_v2_multi_data("DATA", resample_period)
 
     train_dfs, cal_dfs = {}, {}
     for ticker in full_train_dfs:
@@ -917,6 +922,7 @@ def run_ga_optimization_v2_multi(
         num_generations=num_generations,
         ga_epochs=ga_epochs,
         result_logger=rl,
+        bars_per_day=bars_per_day,
     )
     result = ga.run(checkpoint_path=f"checkpoints/{label}_checkpoint.pkl")
 
@@ -978,7 +984,8 @@ def run_ga_optimization_v2_multi(
     results = evaluator.evaluate_pipeline(
         model, model2, test_loader, 
         data.get("time_test", np.array([])), data.get("ticker_test", np.array([])),
-        conf_threshold=confidence_threshold
+        conf_threshold=confidence_threshold,
+        bars_per_day=bars_per_day
     )
 
     rl.log_metrics(results["metrics"])
@@ -994,23 +1001,24 @@ def run_ga_optimization_v2_multi(
     print(f"\n[READY TO COPY] python result_viewer.py {rl.get_run_dir()}\n")
 
 
-def run_ga_v2_multi() -> None:
+def run_ga_v2_multi_30min() -> None:
     run_ga_optimization_v2_multi(
-        mode="full",
-        ga_epochs=50,
-        data_fraction=1.0,
-        population_size=20,
-        num_generations=30,
+        mode="full", ga_epochs=50, data_fraction=1.0, population_size=20, num_generations=30, resample_period="30min"
     )
 
-
-def run_ga_fast_v2_multi() -> None:
+def run_ga_v2_multi_15min() -> None:
     run_ga_optimization_v2_multi(
-        mode="fast",
-        ga_epochs=5,
-        data_fraction=0.2,
-        population_size=6,
-        num_generations=3,
+        mode="full", ga_epochs=50, data_fraction=1.0, population_size=20, num_generations=30, resample_period="15min"
+    )
+
+def run_ga_fast_v2_multi_30min() -> None:
+    run_ga_optimization_v2_multi(
+        mode="fast", ga_epochs=5, data_fraction=0.2, population_size=6, num_generations=3, resample_period="30min"
+    )
+
+def run_ga_fast_v2_multi_15min() -> None:
+    run_ga_optimization_v2_multi(
+        mode="fast", ga_epochs=5, data_fraction=0.2, population_size=6, num_generations=3, resample_period="15min"
     )
 
 
@@ -1030,7 +1038,9 @@ def main() -> None:
             # Multi-stock (universal model) experiments
             "baseline_multi", "ga_fast_multi", "ga_full_multi",
             # V2 Classification experiments
-            "baseline_v2_multi", "attention_v2_multi", "ga_v2_multi", "ga_fast_v2_multi"
+            "baseline_v2_multi", "attention_v2_multi", 
+            "ga_v2_multi_30min", "ga_v2_multi_15min", 
+            "ga_fast_v2_multi_30min", "ga_fast_v2_multi_15min"
         ],
         help="Which experiment to run.",
     )
@@ -1050,8 +1060,10 @@ def main() -> None:
         "ga_full_multi": run_ga_full_multi,
         "baseline_v2_multi": run_baseline_v2_multi,
         "attention_v2_multi": run_attention_v2_multi,
-        "ga_v2_multi": run_ga_v2_multi,
-        "ga_fast_v2_multi": run_ga_fast_v2_multi,
+        "ga_v2_multi_30min": run_ga_v2_multi_30min,
+        "ga_v2_multi_15min": run_ga_v2_multi_15min,
+        "ga_fast_v2_multi_30min": run_ga_fast_v2_multi_30min,
+        "ga_fast_v2_multi_15min": run_ga_fast_v2_multi_15min,
     }
     commands[args.command]()
 
