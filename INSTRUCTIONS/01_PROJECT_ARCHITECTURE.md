@@ -23,8 +23,8 @@ The primary objective is to build a highly modular research system to forecast t
 * **Language:** Python 3.10+
 * **Deep Learning:** PyTorch (preferred for modularity, hardware agnosticism, and research flexibility).
 * **Data Processing:** Pandas, NumPy, Scikit-learn.
-* **Technical Indicators:** `ta` library.
-* **Genetic Algorithm:** DEAP or PyGAD.
+* **Technical Indicators:** `pandas-ta-classic` library.
+* **Genetic Algorithm:** DEAP.
 
 ## 4. Architectural Modularity (Strict Breakdown)
 The system must be built in strictly decoupled modules. Changes in one module cannot break others.
@@ -41,7 +41,7 @@ The system must be built in strictly decoupled modules. Changes in one module ca
     * **Windowing:** Transform 2D tabular data into 3D tensors `[Samples, Time_Window, Features]` where `Time_Window` is dynamic.
 
 ### `feature_engineer.py` (Feature Generation)
-* Calculates technical indicators using the `ta` library or custom Pandas math:
+* Calculates technical indicators using the `pandas-ta-classic` library or custom Pandas math:
     * **Volatility & Price Action:** High-Low Spread, Close-Open Spread, Bollinger Bands, ATR.
     * **Trend & Momentum:** SMA, EMA, MACD, RSI.
     * **Volume:** VWAP, OBV.

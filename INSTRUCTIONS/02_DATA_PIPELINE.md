@@ -5,7 +5,7 @@
 * Handle missing intervals methodically (forward fill, followed by backward fill).
 
 ## 2. Feature Engineering (Technical Indicators)
-The agent should implement functions to generate the following features using the `ta` library or custom `pandas` calculations. 
+The agent should implement functions to generate the following features using the `pandas-ta-classic` library or custom `pandas` calculations. 
 *(Note: Fundamental metrics like P/E and P/B are excluded as they remain static across 5-minute intervals).*
 
 ### Volatility & Price Action
