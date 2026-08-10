@@ -1,0 +1,23 @@
+# Financial Forecasting Pipeline — Python 3.10+
+# Pinned to the versions in the development environment for reproducibility.
+
+# Deep learning
+torch==2.12.0
+
+# Genetic algorithm
+deap==1.4.4
+
+# Data processing
+pandas==2.3.3
+numpy==2.3.4
+scikit-learn==1.7.2
+
+# Technical indicators
+pandas-ta-classic==0.6.20
+
+# Excel ingestion (convert_xlsx_to_csv.py reads DATA/*.xlsx via pandas.read_excel)
+openpyxl==3.1.5
+
+# Visualization & progress
+matplotlib==3.10.7
+tqdm==4.67.3
