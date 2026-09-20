@@ -1,0 +1,31 @@
+{
+ "variant": "shift",
+ "seed": 1,
+ "epochs_max": 12,
+ "patience": 4,
+ "train_secs": 114,
+ "n_test": 16601,
+ "class_share": [
+  0.2729353653394374,
+  0.44310583699777123,
+  0.2839587976627914
+ ],
+ "pred_share": [
+  0.49545208119992773,
+  0.2728148906692368,
+  0.2317330281308355
+ ],
+ "accuracy": 0.4200951749894585,
+ "balanced_accuracy": 0.42803088688236474,
+ "kappa": 0.14479049500961194,
+ "auc_magnitude": 0.6791541494292728,
+ "auc_direction": 0.5836162177736233,
+ "calls": 12072,
+ "calls_nonzero": 11777,
+ "sign_hits": 6333,
+ "sign_acc_nonzero": 0.5377430585038635,
+ "binom_p": 2.689151141878806e-16,
+ "sign_acc_regular": 0.5044206607724523,
+ "n_regular": 6447,
+ "gross_bps_per_call": 1.08427054723961
+}
