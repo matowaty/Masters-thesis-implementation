@@ -6,21 +6,23 @@ Stan: 2026-09-20. Plik opisuje, **jaki skrypt wygenerował każdy rysunek i każ
 
 | Co | Gdzie (folder `Thesis - 2`) | Uwagi |
 |---|---|---|
-| Skrypty analiz (wykresy, tabele, liczby) | `thesis_analysis/` (`an_*.py`, `common.py`, `run_all.sh`, `inputs/`) | 9 skryptów; wspólne funkcje w `common.py` |
-| Logi 8 pełnych przebiegów GA (A100) | `A100-results/RESULTS/` (identyczna kopia tych ośmiu folderów jest też w `RESULTS/`; sześć plików wynikowych każdego przebiegu porównanych sumami kontrolnymi 2026-09-20) | wejście dla `an_runs`, `an_v2_skill`, `an_magnitude`, `an_economics`, `an_ga`; tylko do odczytu |
-| Manifest wszystkich 55 folderów wyników | `thesis_analysis/inputs/run_manifest_all.csv` (folder, data, maszyna, grupa, status w pracy, miejsce w pracy, checkpoint) | utworzony 2026-09-20 skryptem pomocniczym; podstawa planowanej tabeli inwentarza (`PLAN_INTEGRACJI_WYNIKOW.md`) |
+| Skrypty analiz (wykresy, tabele, liczby) | `thesis_analysis/` (`an_*.py`, `common.py`, `run_all.sh`, `inputs/`) | 12 skryptów; wspólne funkcje w `common.py` |
+| Logi 8 pełnych przebiegów GA (A100) | `RESULTS/` (od 2026-09-20 jedyna kopia; 17 duplikatów z `A100-results/RESULTS`, porównanych rekurencyjnie plik po pliku z `RESULTS/`, przeniesiono do `_do_usuniecia_duplikaty_A100/`) | wejście dla `an_runs`, `an_v2_skill`, `an_magnitude`, `an_economics`, `an_ga`, `an_early`; tylko do odczytu |
+| Manifest wszystkich 47 folderów wyników | `thesis_analysis/inputs/run_manifest_all.csv` (folder, data, maszyna, grupa, status w pracy, miejsce w pracy, checkpoint) | utworzony 2026-09-20 skryptem pomocniczym; podstawa planowanej tabeli inwentarza (`PLAN_INTEGRACJI_WYNIKOW.md`) |
 | Surowe dane (LSEG, 5 min, 19 spółek) | `DATA/` | licencja LSEG/Refinitiv: nie publikować |
 | Szybkie przebiegi V1 z ziarnami (RQ2, RQ4) | `RESULTS/` (foldery z `seed.json`), skrypt `quick_runs.py` | CPU, torch 2.14 |
 | Przebieg V2 z przesunięciem okna (sekcja 7.8) | `RESULTS_V2SHIFT/` (12 plików), skrypt `quick_v2_shift.py` | CPU, ziarna 1-3, warianty `base` i `shift` |
+| Test O1 (Model 2: klasyfikator i rozmiar zbioru kalibracyjnego; sekcja 7.5) | `RESULTS_O1/` (4 pliki `.jsonl`: `{fast,full}_part{0,1}.jsonl`), skrypty `quick_o1_model2.py` i `run_o1.sh` | CPU, 2 rdzenie; losowa populacja 20 osobników (ziarno 20260920), 2 tryby × 4 warianty Model 2; wejście dla `an_o1`, zmienna `O1_RESULTS` |
+| Wczesne przebiegi V2 (16-18.06) | `RESULTS/` (foldery E-1..E-6, patrz `inputs/run_manifest_all.csv`) | wejście dla `an_early`; zmienna `EARLY_RESULTS` |
 | Wyniki analiz (generowane) | `thesis_analysis/out/figures/*.pdf\|png`, `out/tables/*.tex`, `out/tables/numbers.tex` | kopiowane do `Masters-thesis-document/thesis/figures/generated/` i `thesis/tables/` |
 
 ## 2. Jak odtworzyć (z korzenia repo `Thesis - 2`)
 
 ```bash
 cd thesis_analysis
-# ścieżki domyślne wskazują na foldery obok (A100-results/RESULTS, DATA, RESULTS, RESULTS_V2SHIFT); można nadpisać:
-#   A100_RESULTS, DATA_DIR, QUICK_RESULTS, V2SHIFT_RESULTS, THESIS_OUT (folder wyjściowy)
-./run_all.sh          # kolejno: an_runs an_v2_skill an_economics an_ga an_data an_v1 an_magnitude an_quick an_v2shift
+# ścieżki domyślne wskazują na foldery obok (RESULTS, DATA, RESULTS_V2SHIFT); można nadpisać:
+#   A100_RESULTS (domyślnie RESULTS/), DATA_DIR, QUICK_RESULTS, V2SHIFT_RESULTS, EARLY_RESULTS, O1_RESULTS, THESIS_OUT (folder wyjściowy)
+./run_all.sh          # kolejno: an_runs an_v2_skill an_economics an_ga an_data an_v1 an_magnitude an_quick an_v2shift an_inventory an_early an_o1
 ```
 
 Uwaga: `run_all.sh` na początku usuwa i tworzy od nowa domyślny folder `thesis_analysis/out`. Wymagania: Python 3.11 (środowisko, w którym powstały wyniki), numpy, pandas, matplotlib, scipy, scikit-learn (wersje użyte do wyników w pracy: pandas 2.3.3, numpy 2.3.4, matplotlib 3.11.2, scipy 1.17.1, scikit-learn 1.7.2). `an_data`, `an_v1`, `an_quick` i `an_v2shift` importują moduły potoku z korzenia repo (`data_processor*.py`, `feature_engineer*.py`), więc skrypty muszą leżeć w `Thesis - 2/thesis_analysis/`. Wszystkie bootstrapy i permutacje mają stałe ziarno; ponowne uruchomienie daje identyczne liczby i tabele (sprawdzone 2026-09-19).
@@ -31,19 +33,22 @@ Kolejność w pracy: tabele `.tex` są wczytywane przez `\input{tables/...}`, ry
 
 | Skrypt | Wejście | Rysunki | Tabele |
 |---|---|---|---|
-| `an_runs.py` | `A100-results/RESULTS/<przebieg>/` (`best_chromosome.json`, `metrics.json`, `test_trade_log.csv`) | F-10, F-11, F-15 | T-05, T-07, T-08, T-08b, T-10 |
-| `an_v2_skill.py` | `A100-results/RESULTS/<przebieg>/test_trade_log.csv` (macierze pomyłek i metryki liczone z logu prognoz) | F-12, F-13, F-13b, F-14, F-22 | T-07b, T-07c |
-| `an_economics.py` | `A100-results/RESULTS/<przebieg>/test_trade_log.csv` | F-18, F-19, F-20, F-21 | T-09, T-09b, T-09c |
-| `an_ga.py` | `A100-results/RESULTS/<przebieg>/` (`ga_population_history.jsonl`, `ga_history.csv`) | F-09, F-16, F-17, F-17b | T-11b |
+| `an_runs.py` | `RESULTS/<przebieg>/` (`best_chromosome.json`, `metrics.json`, `test_trade_log.csv`) | F-10, F-11, F-15 | T-05, T-07, T-08, T-08b, T-10 |
+| `an_v2_skill.py` | `RESULTS/<przebieg>/test_trade_log.csv` (macierze pomyłek i metryki liczone z logu prognoz) | F-12, F-13, F-13b, F-14, F-22 | T-07b, T-07c |
+| `an_economics.py` | `RESULTS/<przebieg>/test_trade_log.csv` | F-18, F-19, F-20, F-21 | T-09, T-09b, T-09c |
+| `an_ga.py` | `RESULTS/<przebieg>/` (`ga_population_history.jsonl`, `ga_history.csv`) | F-09, F-16, F-17, F-17b | T-11b |
 | `an_data.py` | `DATA/*.csv` (surowe dane 5-min) + moduły repo `data_processor_v2.py`, `feature_engineer_v2.py` | F-03, F-04, F-05, F-06 | T-01, T-02, T-12, T-12b |
 | `an_v1.py` | `DATA/*.csv` + `thesis_analysis/inputs/other_runs.csv` (23 wiersze: 18 przebiegów V1 i 5 wczesnych V2; wartości zebrane z `metrics.json` folderów w `RESULTS/` i sprawdzone z nimi 2026-09-20; skrypt sam **nie** czyta folderów `RESULTS/`) + moduły `data_processor.py`, `feature_engineer.py` | F-08 | T-06 |
-| `an_magnitude.py` | `A100-results/RESULTS/<przebieg>/test_trade_log.csv` | - | T-07d |
+| `an_magnitude.py` | `RESULTS/<przebieg>/test_trade_log.csv` | - | T-07d |
 | `an_quick.py` | `RESULTS/` (szybkie przebiegi V1 z ziarnami, tworzone przez `quick_runs.py`) + `DATA/` + moduły V1 | F-23 | T-13 |
+| `an_inventory.py` | `inputs/run_manifest_all.csv` (foldery nie są czytane) | - | T-17, T-18 |
+| `an_early.py` | `RESULTS/<wczesny przebieg>/` (`metrics.json`, `config.json`, `ga_history.csv`, `ga_population_history.jsonl`, `test_trade_log.csv` dla E-6) + `RESULTS/<przebieg>/ga_history.csv`, `ga_population_history.jsonl` (osiem pełnych przebiegów) | F-26 | T-19 |
+| `an_o1.py` | `RESULTS_O1/*.jsonl` (z `quick_o1_model2.py`; 20 osobników × 2 tryby × 4 warianty Model 2) | F-27 | T-20 |
 | `an_v2shift.py` | `RESULTS_V2SHIFT/` (json + npz z `quick_v2_shift.py`) + `DATA/` + moduły V2 | F-24, F-25 | T-14, T-15, T-16 |
 
 (F-xx i T-xx to numery robocze z `THESIS_PLAN.md`; w pracy rysunki i tabele mają numery automatyczne, a w tekście odwołują się przez etykiety z tabel poniżej.)
 
-## 4. Rysunki generowane skryptami (24)
+## 4. Rysunki generowane skryptami (26)
 
 | Plik (`figures/generated/`) | Gdzie w pracy | Etykieta | Skrypt | Opis (z podpisu) |
 |---|---|---|---|---|
@@ -70,9 +75,11 @@ Kolejność w pracy: tabele `.tex` są wczytywane przez `\input{tables/...}`, ry
 | `f22_prediction_agreement.pdf` | Rozdz. 7 | `fig:agreement` | `an_v2_skill.py` | (a) Agreement (Cohen's kappa) between the class predictions of the seven 30-minute runs on the same test bars |
 | `f23_quick_runs.pdf` | Rozdz. 7 | `fig:quick_runs` | `an_quick.py` | Seeded repeats of the first pipeline on JPM |
 | `f24_v2_window_shift.pdf` | Rozdz. 7 | `fig:v2_window_shift` | `an_v2shift.py` | Effect of the window offset on the test set, one line per seed |
+| `f26_early_fitness.pdf` | Rozdz. 7 | `fig:early_fitness` | `an_early.py` | Fitness in the GA logs of the early runs and of the eight complete runs |
+| `f27_o1_fitness.pdf` | Rozdz. 7 | `fig:o1_fitness` | `an_o1.py` | Fitness of 20 random individuals with four variants of Model 2, in-sample (calibration set) and on the test set, in the fast and in the full mode |
 | `f25_v2_shift_sessions.pdf` | Rozdz. 7 | `fig:v2_shift_sessions` | `an_v2shift.py` | Sign accuracy (a) and mean gross profit per call (b) by session of the decision bar (mean over three seeds) for the base window, the shifted window and the model-free rul |
 
-## 5. Tabele generowane skryptami (21)
+## 5. Tabele generowane skryptami (25)
 
 | Plik (`tables/`) | Gdzie w pracy | Etykieta | Skrypt | Opis (z podpisu) |
 |---|---|---|---|---|
@@ -96,27 +103,36 @@ Kolejność w pracy: tabele `.tex` są wczytywane przez `\input{tables/...}`, ry
 | `t13_quick_runs.tex` | Rozdz. 7 | `tab:quick_runs` | `an_quick.py` | Seeded repeats (seeds 1--3) of the V1 experiments |
 | `t14_v2_window_shift.tex` | Rozdz. 7 | `tab:v2_window_shift` | `an_v2shift.py` | Effect of the one-bar window offset of the V2 pipeline on Model 1 (mean standard deviation over seeds 1--3) |
 | `t15_v2_shift_sessions.tex` | Rozdz. 7 | `tab:v2_shift_sessions` | `an_v2shift.py` | Directional calls of Model 1 by session of the decision bar (30-minute bars, m = 0.3, mean over the seeds) |
+| `t17_experiments_overview.tex` | Rozdz. 6 | `tab:experiments_overview` | `an_inventory.py` | Overview of all experiments of the thesis |
+| `t18_inventory_all.tex` | Załącznik A | `tab:inventory_all` | `an_inventory.py` | Inventory of all runs of the thesis (folder names) |
+| `t19_early_runs.tex` | Rozdz. 7 | `tab:early_runs` | `an_early.py` | Test-set metrics printed by the pipeline at the end of the early runs |
+| `t20_o1_model2.tex` | Rozdz. 7 | `tab:o1_model2` | `an_o1.py` | Test O1: fitness of a random generation 0 when Model 2 is fitted with four variants of the classifier |
 | `t16_rule_segments.tex` | Rozdz. 7 | `tab:rule_segments` | `an_v2shift.py` | Sign accuracy (%) of the model-free rule that takes the opposite of the sign of the last bar's return, on bars with a non-zero return and a non-zero previous return, on t |
 
 ## 6. Elementy NIE generowane skryptem analiz
 
+Od 2026-09-21 **każdy** rysunek i każda tabela ma w pracy wiersz „Source: ...” pod spodem oraz wpis „Source: ...” w spisie rysunków / tabel (skrócony podpis `\caption[krótki tytuł. Source: ...]{...}`). Makra źródeł są w `main.tex` (`\srcdraw`, `\srcown`, `\srcexp`, `\srcdata` oraz formy długie z końcówką `L`); tekst źródła zmienia się w jednym miejscu. Tabele generowane skryptami dostają podpis i wiersz źródła z `write_table` na podstawie słownika `FLOAT_META` w `common.py` (klucz: etykieta LaTeX; wartość: krótki tytuł, makro źródła, skrypt). Wpis w `FLOAT_META` jest wymagany dla każdej nowej tabeli.
+
 | Element | Gdzie | Pochodzenie |
 |---|---|---|
-| Rys. `fig:lstm_cell` (komórka LSTM) | Rozdz. 2, `figures/fig_2_2_lstm_cell.png` | **źródło do potwierdzenia przez Mateusza** (obraz 2816x1536 px, bez metadanych; wygląda na wygenerowany narzędziem AI). Podpis w pracy nie zawiera atrybucji |
-| Rys. `fig:bilstm` (BiLSTM rozwinięty w czasie) | Rozdz. 2, `figures/fig_2_3_bilstm.jpg` | **źródło do potwierdzenia przez Mateusza** (JPEG 600x361 px, styl rysunku z publikacji naukowej; prawdopodobnie cudzy). Trzeba podać źródło albo narysować od nowa |
-| Rys. `fig:ga_flowchart` (pętla GA) | Rozdz. 2, `figures/fig_2_5_ga_flowchart.png` | własny (draw.io; plik źródłowy `Masters-thesis-document/draw_io/Genetic algorithm flowchart.drawio`; PNG zawiera osadzony `mxfile`) |
-| Rys. `fig:taxonomy` (taksonomia metod) | Rozdz. 2 | własny, TikZ w `02_state_of_the_art.tex` (zastąpił `fig_2_1_taxonomy.png`, który nie jest już używany; źródło draw.io: `draw_io/Taxonomy of forecasting approaches.drawio`) |
+| Rys. `fig:lstm_cell` (komórka LSTM) | Rozdz. 2, `thesis/figures/tikz/lstm_cell.tex` | **własny rysunek TikZ, narysowany od zera 2026-09-21 według równań (2.6)-(2.11)**; zastąpił obraz `fig_2_2_lstm_cell.png` o niepewnym źródle (plik nieużywany) |
+| Rys. `fig:bilstm` (BiLSTM rozwinięty w czasie) | Rozdz. 2, `thesis/figures/tikz/bilstm.tex` | **własny rysunek TikZ, narysowany od zera 2026-09-21**; zastąpił `fig_2_3_bilstm.jpg` o niepewnym źródle (plik nieużywany) |
+| Rys. `fig:ga_flowchart` (pętla GA) | Rozdz. 2, `thesis/figures/tikz/ga_flowchart.tex` | własny rysunek TikZ (2026-09-21); zastąpił własny obraz z draw.io `fig_2_5_ga_flowchart.png` (ciemne pola bez strzałek); plik draw.io `Masters-thesis-document/draw_io/Genetic algorithm flowchart.drawio` zostaje |
+| Rys. `fig:taxonomy` (taksonomia metod) | Rozdz. 2 | własny, TikZ w `02_state_of_the_art.tex` (zastąpił `fig_2_1_taxonomy.png`, nieużywany; źródło draw.io: `draw_io/Taxonomy of forecasting approaches.drawio`) |
 | Rys. `fig:pipeline`, `fig:chromosome` | Rozdz. 4 | własne, TikZ w `04_methodology.tex` |
 | Tabele `tab:features`, `tab:ga_space` | Rozdz. 4 | wpisane ręcznie w `04_methodology.tex` na podstawie kodu (`feature_engineer_v2.py`, `ga_optimizer_v2.py`) |
-| Tabele `tab:modules`, `tab:versions` | Rozdz. 5 | wpisane ręcznie na podstawie struktury repo i `requirements.txt` / środowiska |
+| Tabele `tab:modules`, `tab:versions`, `tab:config` | Rozdz. 5, 6 | wpisane ręcznie na podstawie struktury repo, `requirements.txt` i konfiguracji przebiegów |
 | Wzory | Rozdz. 3-4 | własny zapis; źródła literaturowe w tekście |
+
+Obrazy `fig_2_1_taxonomy.png`, `fig_2_2_lstm_cell.png`, `fig_2_3_bilstm.jpg`, `fig_2_5_ga_flowchart.png` w `thesis/figures/` nie są już używane w pracy.
 
 ## 7. Do zrobienia w kwestii źródeł
 
-- Potwierdzić pochodzenie dwóch obrazów z rozdz. 2 (LSTM, BiLSTM); jeśli cudze, dodać atrybucję i sprawdzić licencję albo narysować własne wersje.
-- Sprawdzić wymóg wydziału co do podpisów pod rysunkami/tabelami (np. "Źródło: opracowanie własne"); jeśli obowiązuje, dodać jedną linię do każdej tabeli i rysunku.
-- Zdecydować, czy `RESULTS/` ma być jedynym źródłem prawdy dla wyników (obecnie `run_all.sh` czyta `A100-results/RESULTS/`); zmiana ścieżki w kodzie dopiero przy porządkowaniu repozytorium.
-- Kod w `thesis_analysis/`, `quick_runs.py`, `quick_v2_shift.py`, `RESULTS_V2SHIFT/` i `A100-results/` **nie jest jeszcze w commicie git** (`git status`: untracked). Przed oddaniem: commit + znacznik (plan C-13) albo archiwum zip.
+- ~~Potwierdzić pochodzenie obrazów z rozdz. 2~~ - zrobione 2026-09-21: wszystkie rysunki rozdz. 2 są własnymi rysunkami TikZ.
+- ~~Podpisy „Źródło” pod rysunkami/tabelami~~ - zrobione 2026-09-21 (patrz początek sekcji 6).
+- Dane cenowe pochodzą z eksportu LSEG (dawniej Refinitiv); decyzja Mateusza, czy dodać zdanie o licencji / warunkach użycia danych (w toku).
+- `RESULTS/` jest jedynym źródłem prawdy dla wyników (decyzja z 2026-09-20; ścieżka domyślna w `common.py` zmieniona z `A100-results/RESULTS` na `RESULTS`). Pozostałe w `A100-results/`: `checkpoints/` (pliki `.pkl`, `model.pt`) i `analysis/run_summary.csv`.
+- Wyniki (`RESULTS/`) Mateusz spakuje sam do archiwum zip; zostają poza git (decyzja 2026-09-21). Kod w `thesis_analysis/`, `quick_runs.py`, `quick_v2_shift.py` i `quick_o1_model2.py` nie jest jeszcze w commicie git; commit + znacznik tylko na jego wyraźne polecenie.
 
 ## 8. Mapa oznaczeń przebiegów: praca <-> folder <-> checkpoint
 
@@ -133,4 +149,4 @@ Nazwy folderów z Colaba zawierają czas UTC, z laptopa - czas lokalny (+02:00).
 | R30-5 | `ga_full_v2_multi_30min_all_stocks_20260623_111437` | `GA_RUN_6` |
 | R30-6 | `ga_full_v2_multi_30min_all_stocks_20260623_210817` | `ga_full_v2_multi_30min_checkpoint.pkl` (katalog główny) |
 
-Podział 55 folderów w `RESULTS/`: 15 powtórzeń V1 z ziarnami (CPU), 18 przebiegów V1, 5 wczesnych V2, 8 pełnych GA, 9 przerwanych startów (tylko `config.json` i kilka linii logu; jeden – `ga_full_v2_multi_all_stocks_20260616_171052` – ma 10 pokoleń w `ga_history.csv`).
+Podział 47 folderów w `RESULTS/`: 15 powtórzeń V1 z ziarnami (CPU), 18 przebiegów V1, 6 wczesnych V2 (E-1..E-6; E-5 = `ga_full_v2_multi_all_stocks_20260616_171052`, przerwany po 10 pokoleniach, zachowano tylko `ga_history.csv`), 8 pełnych GA. Osiem przerwanych startów bez wyników (tylko `config.json` i kilka linii logu) przeniesiono 2026-09-20 do `_do_usuniecia_przerwane_przebiegi/` (do ręcznego usunięcia).

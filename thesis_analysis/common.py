@@ -1,7 +1,7 @@
 """Shared helpers for the thesis analysis scripts.
 
 Every number and figure in the thesis is produced by a script in this folder.
-Inputs (read-only): A100-results/RESULTS, RESULTS, DATA.
+Inputs (read-only): RESULTS (all runs, including the eight full A100 runs), DATA.
 Outputs: out/figures/*.pdf|png, out/tables/*.tex, out/tables/numbers.tex.
 
 Paths can be overridden with environment variables:
@@ -23,7 +23,7 @@ import pandas as pd  # noqa: E402
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 
-A100 = Path(os.environ.get("A100_RESULTS", REPO / "A100-results" / "RESULTS"))
+A100 = Path(os.environ.get("A100_RESULTS", REPO / "RESULTS"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", REPO / "DATA"))
 OUT = Path(os.environ.get("THESIS_OUT", HERE / "out"))
 OUT_FIG = OUT / "figures"
@@ -148,7 +148,7 @@ def write_table(name: str, header: list[str], rows: list[list], colfmt: str,
                 resize: bool = False, font: str = r"\small") -> None:
     """Write a booktabs table to out/tables/<name>.tex. Rows are lists of pre-formatted strings."""
     lines = [r"\begin{table}[htbp]", r"\centering", font]
-    lines.append(rf"\caption{{{caption}}}")
+    lines.append(rf"\caption{caption_opt(label)}{{{caption}}}")
     lines.append(rf"\label{{{label}}}")
     if resize:
         lines.append(r"\resizebox{\textwidth}{!}{%")
@@ -168,9 +168,101 @@ def write_table(name: str, header: list[str], rows: list[list], colfmt: str,
         lines.append("}")
     if note:
         lines.append(rf"\\[2pt]{{\footnotesize {note}}}")
+    lines.append(source_line(label))
     lines.append(r"\end{table}")
     (OUT_TAB / f"{name}.tex").write_text("\n".join(lines) + "\n")
     print("table:", name)
+
+
+
+# --------------------------------------------------------------------------
+# Sources of figures and tables (Sect. "source line" of every float; see SOURCES.md, section 6)
+# label -> (short title for the lists of figures / tables, source macro defined in main.tex, script or None)
+#   srcdraw = own drawing made in TikZ, srcown = own work (descriptive), srcexp = own calculations from the results of the
+#   experiments, srcdata = own calculations from the price data (LSEG export).
+# --------------------------------------------------------------------------
+FLOAT_META: dict[str, tuple[str, str, str | None]] = {
+    # drawings (TikZ)
+    "fig:taxonomy": ("Taxonomy of stock forecasting approaches", "srcdraw", None),
+    "fig:lstm_cell": ("Internal structure of an LSTM cell", "srcdraw", None),
+    "fig:bilstm": ("Bidirectional LSTM unfolded over the input window", "srcdraw", None),
+    "fig:ga_flowchart": ("Standard genetic algorithm loop", "srcdraw", None),
+    "fig:pipeline": ("Structure of the second pipeline (V2)", "srcdraw", None),
+    "fig:chromosome": ("Encoding of an individual of the V2 genetic algorithm", "srcdraw", None),
+    # descriptive tables
+    "tab:features": ("The 28 candidate features of the V2 pipeline", "srcown", None),
+    "tab:ga_space": ("Search space of the V2 genetic algorithm", "srcown", None),
+    "tab:modules": ("Modules of the forecasting pipeline", "srcown", None),
+    "tab:versions": ("Pinned library versions of the pipeline", "srcown", None),
+    "tab:config": ("Configuration of the full GA runs of the second pipeline", "srcown", None),
+    "tab:provenance": ("Scripts of the analysis and their outputs", "srcown", None),
+    "tab:experiments_overview": ("Overview of all experiments of the thesis", "srcown", "an_inventory.py"),
+    "tab:inventory_all": ("Inventory of all runs of the thesis", "srcown", "an_inventory.py"),
+    # data
+    "fig:data_coverage": ("Coverage of the five-minute data", "srcdata", "an_data.py"),
+    "fig:stylised_facts": ("Stylised facts of the five-minute returns", "srcdata", "an_data.py"),
+    "fig:split_timeline": ("Chronological 60/20/20 split of the 30-minute data", "srcdata", "an_data.py"),
+    "fig:labels": ("Class labels of the V2 pipeline", "srcdata", "an_data.py"),
+    "tab:data_inventory": ("The 19 stocks used in the experiments", "srcdata", "an_data.py"),
+    "tab:splits": ("Chronological 60/20/20 split of each stock", "srcdata", "an_data.py"),
+    "tab:baselines": ("Reference points for the three-class task", "srcdata", "an_data.py"),
+    "tab:directional_baselines": ("Directional reference predictors", "srcdata", "an_data.py"),
+    # experiments
+    "fig:v1_results": ("Test-set results of the 18 runs of the first pipeline", "srcexp", "an_v1.py"),
+    "fig:quick_runs": ("Seeded repeats of the first pipeline on JPM", "srcexp", "an_quick.py"),
+    "fig:confusion": ("Confusion matrix of Model~1 on the test sets, pooled", "srcexp", "an_v2_skill.py"),
+    "fig:class_shares": ("Class shares of the test sets and of the predictions of Model~1", "srcexp", "an_v2_skill.py"),
+    "fig:agreement": ("Agreement between the class predictions of the runs", "srcexp", "an_v2_skill.py"),
+    "fig:approved": ("Composition of the bars approved by Model~2", "srcexp", "an_runs.py"),
+    "fig:m2_confidence": ("Confidence of Model~2 on the test sets", "srcexp", "an_v2_skill.py"),
+    "fig:ga_convergence": ("Progress of the eight GA runs", "srcexp", "an_ga.py"),
+    "fig:sharpe_gap": ("Sharpe ratio of the best individuals: calibration set and test set", "srcexp", "an_runs.py"),
+    "fig:early_fitness": ("Fitness in the GA logs of the early runs", "srcexp", "an_early.py"),
+    "fig:o1_fitness": ("Test O1: fitness and test Sharpe ratio for four variants of Model~2", "srcexp", "an_o1.py"),
+    "fig:gene_evolution": ("Composition of the population by gene value over the generations", "srcexp", "an_ga.py"),
+    "fig:landscape": ("Calibration Sharpe ratios of all valid individuals", "srcexp", "an_ga.py"),
+    "fig:gene_effects": ("Mean calibration Sharpe ratio by value of each hyperparameter gene", "srcexp", "an_ga.py"),
+    "fig:feature_stability": ("Stability of the feature selection of the best chromosomes", "srcexp", "an_runs.py"),
+    "fig:uncertainty": ("Uncertainty of the gross profit per call", "srcexp", "an_economics.py"),
+    "fig:breakeven": ("Break-even one-way transaction cost of the directional calls", "srcexp", "an_economics.py"),
+    "fig:equity": ("Cumulative profit of the equal-weight portfolio", "srcexp", "an_economics.py"),
+    "fig:edge_groups": ("Gross profit per call by stock and by hour of the day", "srcexp", "an_economics.py"),
+    "fig:v2_window_shift": ("Effect of the window offset on the test set", "srcexp", "an_v2shift.py"),
+    "fig:v2_shift_sessions": ("Effect of the window offset by session of the decision bar", "srcexp", "an_v2shift.py"),
+    "fig:confusion_grid": ("Confusion matrices of Model~1 for the eight runs", "srcexp", "an_v2_skill.py"),
+    "tab:inventory": ("Inventory of the eight completed GA runs", "srcexp", "an_runs.py"),
+    "tab:v1_results": ("Results of the 18 runs of the first pipeline", "srcexp", "an_v1.py"),
+    "tab:reported_vs_real": ("Metrics reported by the pipeline and the approved trades", "srcexp", "an_runs.py"),
+    "tab:v2_skill": ("Model~1 (three-class) on the test set", "srcexp", "an_v2_skill.py"),
+    "tab:m2_discrimination": ("Model~2 as a classifier of ``Model~1 was correct''", "srcexp", "an_v2_skill.py"),
+    "tab:magnitude_direction": ("Information of Model~1 about the size and the sign of the next move", "srcexp", "an_magnitude.py"),
+    "tab:chromosomes": ("Best chromosome of each GA run", "srcexp", "an_runs.py"),
+    "tab:selected_features_app": ("Features selected by the best chromosome of each GA run", "srcexp", "an_runs.py"),
+    "tab:economics": ("Counterfactual gross P\\&L of the calls of Model~1", "srcexp", "an_economics.py"),
+    "tab:sessions": ("Gross P\\&L of the calls of Model~1 by trading session", "srcexp", "an_economics.py"),
+    "tab:economics_net": ("Net P\\&L per call after transaction costs", "srcexp", "an_economics.py"),
+    "tab:feature_frequency": ("Selection frequency of the 28 candidate features", "srcexp", "an_runs.py"),
+    "tab:ga_summary": ("Summary of the genetic-algorithm search per run", "srcexp", "an_ga.py"),
+    "tab:quick_runs": ("Seeded repeats of the V1 experiments", "srcexp", "an_quick.py"),
+    "tab:v2_window_shift": ("Effect of the one-bar window offset on Model~1", "srcexp", "an_v2shift.py"),
+    "tab:v2_shift_sessions": ("Directional calls of Model~1 by session (window-offset experiment)", "srcexp", "an_v2shift.py"),
+    "tab:rule_segments": ("Sign accuracy of the reversal rule by segment", "srcexp", "an_v2shift.py"),
+    "tab:early_runs": ("Test-set metrics printed by the early runs", "srcexp", "an_early.py"),
+    "tab:o1_model2": ("Test O1: fitness with four variants of Model~2", "srcexp", "an_o1.py"),
+}
+
+
+def caption_opt(label: str) -> str:
+    """Optional argument of \\caption (entry of the list of figures / tables) that states the source."""
+    short, macro, _ = FLOAT_META[label]
+    return f"[{short}. Source: \\{macro}]"
+
+
+def source_line(label: str) -> str:
+    """Line under a figure or table naming its source (macro defined in main.tex) and, if any, the generating script."""
+    _, macro, script = FLOAT_META[label]
+    extra = "" if script is None else "; script \\texttt{" + script.replace("_", "\\_") + "}"
+    return f"\\figsource{{\\{macro}L{extra}}}"
 
 
 _NUMBERS: dict[str, str] = {}
