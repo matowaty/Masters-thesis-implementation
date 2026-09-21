@@ -69,12 +69,12 @@ def main() -> None:
         rows.append([eid, describe(eid), DATE[eid], f"{100 * m['trade_rate']:.1f}\\%", f"{m['precision_at_conf']:.3f}",
                      neg(f"{m['annualized_sharpe']:.2f}")])
     write_table(
-        "t19_early_runs", ["ID", "Configuration", "Date (2026)", "Trade rate", "Precision", "Sharpe"], rows, "lp{5.0cm}lrrr",
+        "t19_early_runs", ["ID", "Configuration", "Date (2026)", "Trade rate", "Precision", "Sharpe"], rows, r"@{}l>{\raggedright\arraybackslash}Xlrrr@{}",
         r"Test-set metrics printed by the pipeline at the end of the early runs of the second pipeline (E-1 to E-4 and E-6, see Appendix~\ref{app:inventory}). "
         r"Trade rate is the share of test bars approved by Model~2, precision is the share of the approved bars on which Model~1 was right, and the Sharpe ratio is annualised. "
         r"E-1 to E-3 have the same hyperparameters (window 12, 64 units, two layers, dropout 0.2, learning rate $10^{-3}$, 50 epochs); E-1 has no entry for the architecture (presumably the default, the BiLSTM of E-2). "
         r"The runs were single runs without fixed random seeds; only for E-6 was the log of the test predictions stored. Run E-5 has no test evaluation (Figure~\ref{fig:early_fitness}).",
-        "tab:early_runs", resize=False, font=r"\small")
+        "tab:early_runs", resize=False, font=r"\small", rules=True, full_width=True)
     prec = [reported[e]["precision_at_conf"] for e in reported]
     sh = [reported[e]["annualized_sharpe"] for e in reported]
     tr = [reported[e]["trade_rate"] for e in reported]

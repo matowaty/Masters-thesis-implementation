@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib import font_manager  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -63,11 +65,23 @@ RUN_COLORS = {
 TEXT_WIDTH_IN = 15.0 / 2.54  # 15 cm text block
 
 
+def _register_fonts() -> None:
+    """Optionally register the Arial files of the thesis template (THESIS_FONT_DIR=<folder with arial*.ttf>)."""
+    d = os.environ.get("THESIS_FONT_DIR")
+    if d:
+        for f in sorted(Path(d).glob("*.ttf")):
+            font_manager.fontManager.addfont(str(f))
+
+
 def set_style() -> None:
+    """Figure style of the faculty template: Arial 9 pt (Liberation Sans, a metric clone, is the fallback)."""
+    _register_fonts()
     plt.rcParams.update({
         "figure.dpi": 120, "savefig.dpi": 220, "savefig.bbox": "tight",
-        "font.family": "serif", "font.serif": ["CMU Serif", "DejaVu Serif"],
-        "mathtext.fontset": "cm", "font.size": 9, "axes.titlesize": 9.5,
+        "font.family": "sans-serif", "font.sans-serif": ["Arial", "Liberation Sans", "Helvetica", "DejaVu Sans"],
+        "mathtext.fontset": "custom", "mathtext.rm": "sans", "mathtext.it": "sans:italic",
+        "mathtext.bf": "sans:bold", "mathtext.fallback": "cm",
+        "font.size": 9, "axes.titlesize": 9.5,
         "axes.labelsize": 9, "xtick.labelsize": 8, "ytick.labelsize": 8,
         "legend.fontsize": 8, "legend.frameon": False,
         "axes.spines.top": False, "axes.spines.right": False,
@@ -143,27 +157,54 @@ def fmt_int(n: float) -> str:
     return f"{int(round(n)):,}".replace(",", r"\,")
 
 
+def wrap_header(h: str, maxlen: int = 12) -> str:
+    """Break a long column header into lines of about maxlen characters (newline-separated; math spans are kept whole)."""
+    if "\n" in h or len(h) <= maxlen:
+        return h
+    toks = re.findall(r"(?:[^\s$]|\$[^$]*\$)+", h)
+    lines, cur = [], ""
+    for t in toks:
+        if cur and len(re.sub(r"[\\$]", "", cur)) + 1 + len(re.sub(r"[\\$]", "", t)) > maxlen:
+            lines.append(cur)
+            cur = t
+        else:
+            cur = (cur + " " + t) if cur else t
+    if cur:
+        lines.append(cur)
+    return "\n".join(lines)
+
+
 def write_table(name: str, header: list[str], rows: list[list], colfmt: str,
                 caption: str, label: str, note: str | None = None,
-                resize: bool = False, font: str = r"\small") -> None:
-    """Write a booktabs table to out/tables/<name>.tex. Rows are lists of pre-formatted strings."""
+                resize: bool = False, font: str = r"\small", rules: bool = False, full_width: bool = False) -> None:
+    """Write a booktabs table to out/tables/<name>.tex. Rows are lists of pre-formatted strings.
+
+    rules=True adds a faded thin rule between the rows (\\rowrule, defined in main.tex) and a little more vertical space,
+    for tables with wrapped cells; full_width=True sets the table in tabularx at the text width (colfmt must contain an X column)."""
     lines = [r"\begin{table}[htbp]", r"\centering", font]
     lines.append(rf"\caption{caption_opt(label)}{{{caption}}}")
     lines.append(rf"\label{{{label}}}")
     if resize:
         lines.append(r"\resizebox{\textwidth}{!}{%")
-    lines.append(rf"\begin{{tabular}}{{{colfmt}}}")
+    if rules:
+        lines.append(r"\renewcommand{\arraystretch}{1.25}")
+    env = "tabularx" if full_width else "tabular"
+    lines.append(rf"\begin{{tabularx}}{{\linewidth}}{{{colfmt}}}" if full_width else rf"\begin{{tabular}}{{{colfmt}}}")
     lines.append(r"\toprule")
+    if resize:  # wide tables are scaled down to the text width: wrap long headers so that the scale stays close to 1
+        header = [wrap_header(h) for h in header]
     hdr = [(r"\makecell{" + h.replace("\n", r"\\{}") + "}") if "\n" in h else h for h in header]
     lines.append(" & ".join(hdr) + r" \\")
     lines.append(r"\midrule")
-    for r in rows:
+    for i, r in enumerate(rows):
         if r == "MIDRULE":
             lines.append(r"\midrule")
         else:
             lines.append(" & ".join(str(x) for x in r) + r" \\")
+            if rules and i + 1 < len(rows) and rows[i + 1] != "MIDRULE":
+                lines.append(r"\rowrule")
     lines.append(r"\bottomrule")
-    lines.append(r"\end{tabular}")
+    lines.append(rf"\end{{{env}}}")
     if resize:
         lines.append("}")
     if note:
