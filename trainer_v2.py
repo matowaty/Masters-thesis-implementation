@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 class EarlyStoppingV2:
+    """Stops training once the validation loss has not improved for `patience` epochs."""
+
     def __init__(self, patience: int = 10, min_delta: float = 1e-4) -> None:
         self.patience = patience
         self.min_delta = min_delta
@@ -32,6 +34,7 @@ class EarlyStoppingV2:
         self.early_stop = False
 
     def __call__(self, val_loss: float) -> None:
+        """Update the early-stopping state with this epoch's validation loss."""
         if val_loss < self.best_loss - self.min_delta:
             self.best_loss = val_loss
             self.counter = 0
@@ -43,6 +46,10 @@ class EarlyStoppingV2:
 
 
 class TrainerV2:
+    """Trains and evaluates the V2 classification BiLSTM (Model 1): training loop,
+    early stopping, dataloader construction with class-weighted loss, and checkpointing.
+    """
+
     def __init__(
         self,
         model: nn.Module,
@@ -71,6 +78,9 @@ class TrainerV2:
         X_val: np.ndarray, y_val: np.ndarray, ret_val: np.ndarray,
         batch_size: int = 64,
     ) -> Tuple[DataLoader, DataLoader]:
+        """Build train/val DataLoaders and set `self.criterion` to a class-weighted
+        CrossEntropyLoss (weights computed from `y_train`).
+        """
         
         # Set criterion with class weights computed from training set
         weights = self.compute_class_weights(y_train)
@@ -96,6 +106,7 @@ class TrainerV2:
         self, dataloader: DataLoader, max_grad_norm: float = 1.0,
         epoch: int = 0, total_epochs: int = 0, show_progress: bool = False,
     ) -> float:
+        """Run one training epoch with gradient clipping; return the mean training loss."""
         self.model.train()
         total_loss = 0.0
 
@@ -123,6 +134,7 @@ class TrainerV2:
         return total_loss / len(dataloader)
 
     def _validate(self, dataloader: DataLoader) -> float:
+        """Compute the mean loss on `dataloader` without updating weights."""
         self.model.eval()
         total_loss = 0.0
         
@@ -144,6 +156,11 @@ class TrainerV2:
         verbose: bool = True,
         result_logger: Optional["ResultLogger"] = None,
     ) -> Tuple[float, float]:
+        """Run the training loop with early stopping.
+
+        Returns:
+            Tuple of (training loss at the best epoch, best validation loss).
+        """
         early_stopping = EarlyStoppingV2(patience=patience)
         best_train_loss = float("inf")
         if verbose: logger.info("Starting V2 training on %s for up to %d epochs", self.device, epochs)
@@ -181,6 +198,7 @@ class TrainerV2:
     def save_checkpoint(
         self, filepath: str, data_processor: DataProcessorV2, feature_names: list, window_size: int
     ) -> None:
+        """Save model/optimizer state, feature names, window size, and fitted stock scalers to `filepath`."""
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -198,6 +216,7 @@ class TrainerV2:
         logger.info("[OK] V2 Checkpoint saved to %s", path)
 
     def load_checkpoint(self, filepath: str, data_processor: DataProcessorV2) -> Dict:
+        """Load model/optimizer state and stock scalers from `filepath`; return feature names and window size."""
         path = Path(filepath)
         if not path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {path}")

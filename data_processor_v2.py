@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 _OHLCV_COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 
 class DataProcessorV2:
+    """Loads and preprocesses 5-minute OHLCV data for the V2 pipeline: resampling,
+    market-context features, 3-class labeling, chronological train/cal/test splitting,
+    and per-stock scaling + windowing.
+    """
+
     def __init__(
         self,
         scaler_type: str = "standard",
@@ -52,6 +57,7 @@ class DataProcessorV2:
         return StandardScaler() if self._scaler_type == "standard" else MinMaxScaler()
 
     def load_data(self, filepath: str) -> pd.DataFrame:
+        """Load a raw 5-minute OHLCV CSV, keep only the OHLCV columns, and sort by time."""
         df = pd.read_csv(filepath, parse_dates=["Datetime"], index_col="Datetime")
         df = df[_OHLCV_COLUMNS].copy().sort_index(ascending=True)
         return df
@@ -68,6 +74,7 @@ class DataProcessorV2:
         return df
 
     def handle_missing_intervals(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Fill gaps in the time series (forward-fill, then back-fill any leading gap)."""
         df = df.ffill().bfill()
         return df
 
@@ -124,6 +131,12 @@ class DataProcessorV2:
         threshold_multiplier: float = 0.5,
         resample_period: str = "30min",
     ) -> Tuple[Dict[str, pd.DataFrame], List[str]]:
+        """Load every CSV in `data_dir`, resample, inject market-context features, engineer
+        technical indicators, and compute targets/labels for each ticker.
+
+        Returns:
+            Tuple of ({ticker: prepared DataFrame}, list of feature column names).
+        """
         
         data_dir = Path(data_dir)
         csv_files = sorted(data_dir.glob("*.csv"))
@@ -163,6 +176,7 @@ class DataProcessorV2:
     def temporal_split(
         self, df: pd.DataFrame
     ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Chronologically split one stock's DataFrame into (train, calibration, test)."""
         n = len(df)
         train_end = int(n * self.train_ratio)
         cal_end = train_end + int(n * self.cal_ratio)
@@ -176,6 +190,7 @@ class DataProcessorV2:
     def split_all_stocks(
         self, stock_dfs: Dict[str, pd.DataFrame]
     ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
+        """Apply `temporal_split` independently to every stock (never across stock boundaries)."""
         train_dfs, cal_dfs, test_dfs = {}, {}, {}
         for ticker, df in stock_dfs.items():
             tr, ca, te = self.temporal_split(df)
@@ -188,6 +203,9 @@ class DataProcessorV2:
         self, features: np.ndarray, targets: np.ndarray, fwd_returns: np.ndarray, 
         timestamps: np.ndarray, tickers: np.ndarray, window_size: int
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Slide a fixed-size window over `features` to build 3D samples `[N, window_size, F]`,
+        paired with each window's target class, forward return, timestamp and ticker.
+        """
         n_samples = features.shape[0]
         X, y, ret, times, tks = [], [], [], [], []
         for i in range(window_size, n_samples):
@@ -206,6 +224,9 @@ class DataProcessorV2:
         feature_cols: List[str],
         window_size: int = 12,
     ) -> Dict[str, np.ndarray]:
+        """Fit a per-stock scaler on each stock's training split, apply it to train/cal/test,
+        window every split, and concatenate the results across stocks.
+        """
         
         arrays = {k: [] for k in ["X_train", "y_train", "ret_train", "time_train", "ticker_train",
                                   "X_cal", "y_cal", "ret_cal", "time_cal", "ticker_cal",

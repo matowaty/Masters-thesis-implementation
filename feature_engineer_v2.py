@@ -79,6 +79,9 @@ class FeatureEngineerV2:
         self.feature_names: List[str] = []
 
     def add_all_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Compute every V2 feature family in order, rename pandas-ta columns to the
+        project's naming convention, drop NaN warm-up rows, and record the resulting feature list.
+        """
         n_before = len(df)
 
         # 1. Volatility & Price Action
@@ -176,6 +179,7 @@ class FeatureEngineerV2:
         return df
 
     def add_vwap(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Volume-weighted average price, resetting the cumulative sums at each trading day boundary."""
         typical_price = (df["High"] + df["Low"] + df["Close"]) / 3
         tp_vol = typical_price * df["Volume"]
         trading_day = df.index.date
@@ -193,6 +197,9 @@ class FeatureEngineerV2:
     # ------------------------------------------------------------------
 
     def add_v2_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add the five V2-only features: RSI divergence, volume surprise, bar range,
+        close position within the bar, and distance from VWAP.
+        """
         # RSI Divergence
         # Note: RSI_14 is the pandas-ta auto-generated name before renaming
         if "RSI_14" in df.columns:
@@ -217,6 +224,10 @@ class FeatureEngineerV2:
         return df
 
     def add_cross_stock_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add the stock's return and z-score relative to the market context (Index_Return /
+        Index_Volatility injected by DataProcessorV2); falls back to zeros with a warning
+        if those columns are missing.
+        """
         # Relies on data_processor_v2 injecting Index_Return and Index_Volatility
         if "Index_Return" in df.columns and "Past_Return_1_Tick" in df.columns:
             df["Rel_Return"] = df["Past_Return_1_Tick"] - df["Index_Return"]

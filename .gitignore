@@ -1,5 +1,12 @@
 RESULTS/
+RESULTS_O1/
+DATA/
+A100-results/checkpoints/
+A100-results/RESULTS/
 checkpoints/
 artifacts/
 __pycache__/
 *.pt
+*.pkl
+_do_usuniecia_*/
+.claude/

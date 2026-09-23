@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineEvaluatorV2:
+    """Evaluates a trained Model 1 + Model 2 pair on a test set: precision, trade rate,
+    annualized Sharpe ratio, confusion matrix, and a per-bar trade log.
+    """
+
     def __init__(self, device: torch.device):
         self.device = device
 

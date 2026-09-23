@@ -40,6 +40,10 @@ NUM_HP_GENES = 6  # window, hidden, dropout, lr, thresh_mult, conf_thresh
 
 
 class ChromosomeV2:
+    """Decoded representation of one GA individual: which features are selected plus
+    the model/training hyperparameters and V2-specific thresholds.
+    """
+
     def __init__(
         self,
         feature_mask: List[int],
@@ -59,6 +63,9 @@ class ChromosomeV2:
         self.confidence_threshold = confidence_threshold
 
     def to_dict(self, feature_names: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Serialize the chromosome to a plain dict for logging; includes selected feature
+        names when `feature_names` is given.
+        """
         d = {
             "window_size": self.window_size,
             "hidden_units": self.hidden_units,
@@ -74,6 +81,9 @@ class ChromosomeV2:
 
     @staticmethod
     def from_vector(vector: list, num_features: int) -> "ChromosomeV2":
+        """Decode a flat DEAP individual (feature bits followed by 6 hyperparameter gene
+        indices) into a ChromosomeV2, clamping each index into its options list.
+        """
         f_mask = [int(round(v)) for v in vector[:num_features]]
         start = num_features
         w_idx = int(round(vector[start]))
@@ -95,6 +105,10 @@ class ChromosomeV2:
 
 
 class GAOptimizerV2:
+    """DEAP-based genetic algorithm that co-optimizes feature selection and model
+    hyperparameters for the V2 pipeline, maximizing simulated calibration-set Sharpe ratio.
+    """
+
     def __init__(
         self,
         feature_names: List[str],
@@ -127,6 +141,9 @@ class GAOptimizerV2:
         self._setup_deap_toolbox()
 
     def _setup_deap_toolbox(self) -> None:
+        """Register DEAP's fitness/individual types and the creation, selection, crossover
+        and mutation operators used by `run`.
+        """
         if not hasattr(creator, "FitnessMax"):
             creator.create("FitnessMax", base.Fitness, weights=(1.0,))
         if not hasattr(creator, "IndividualV2"):
@@ -228,6 +245,9 @@ class GAOptimizerV2:
         return sharpe
 
     def evaluate_individual(self, individual: list) -> Tuple[float]:
+        """GA fitness function: decode the individual, retrain Model 1 + Model 2 on the
+        selected features/hyperparameters, and return (simulated Sharpe ratio - complexity penalty,).
+        """
         chrom = ChromosomeV2.from_vector(individual, self.num_features)
         active_features = [n for n, b in zip(self.feature_names, chrom.feature_mask) if b == 1]
         if not active_features: return (-999.0,)
@@ -300,6 +320,12 @@ class GAOptimizerV2:
         return (sharpe - penalty,)
 
     def run(self, checkpoint_path: Optional[str] = None) -> Dict[str, Any]:
+        """Run the GA for `self.num_generations` generations (resuming from `checkpoint_path`
+        if present), checkpointing after every generation.
+
+        Returns:
+            Dict with the best chromosome (as a dict) and its fitness.
+        """
         stats = tools.Statistics(lambda ind: ind.fitness.values[0])
         stats.register("min", np.min)
         stats.register("avg", np.mean)
@@ -397,6 +423,7 @@ class GAOptimizerV2:
         pop: list,
         hof: tools.HallOfFame,
     ) -> None:
+        """Pickle the population, hall of fame, and RNG states so the run can be resumed."""
         if path is None:
             return
 
@@ -424,6 +451,11 @@ class GAOptimizerV2:
         self,
         path: Optional[str],
     ) -> Tuple[int, Optional[list], Optional[tools.HallOfFame]]:
+        """Load a checkpoint if `path` exists and restore RNG state, population and hall of fame.
+
+        Returns:
+            Tuple of (generation to resume from, population or None, hall of fame or None).
+        """
         if path is None or not Path(path).exists():
             return 0, None, None
 
