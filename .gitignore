@@ -3,6 +3,7 @@ RESULTS_O1/
 DATA/
 A100-results/checkpoints/
 A100-results/RESULTS/
+A100-results/analysis/
 checkpoints/
 artifacts/
 __pycache__/
@@ -10,3 +11,5 @@ __pycache__/
 *.pkl
 _do_usuniecia_*/
 .claude/
+thesis_implementation_summary.md
+ai_project_knowledge_base.md
