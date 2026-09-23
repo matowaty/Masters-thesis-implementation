@@ -1,0 +1,16 @@
+Copyright (c) 2026 Mateusz. All rights reserved.
+
+This repository and its contents are published in connection with the
+author's master's thesis, "Forecasting the Rate of Return on Selected
+Financial Instruments Using Deep Learning and a Genetic Algorithm," for
+review purposes.
+
+No license, express or implied, is granted to any person to copy, use,
+modify, merge, publish, distribute, sublicense, or otherwise deal in
+this software or any portion of it, for any purpose, without the prior
+written permission of the copyright holder. All rights not expressly
+granted herein are reserved.
+
+Third-party data referenced by this project (see README.md) is
+licensed separately by its original provider and is not included in
+this repository.
